@@ -1,0 +1,70 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --color-background-primary: #ffffff;
+  --color-background-secondary: #f3f4f6;
+  --color-background-tertiary: #e5e7eb;
+  --color-background-success: #dcfce7;
+  --color-background-danger: #fee2e2;
+  --color-background-warning: #fef3c7;
+  --color-background-info: #dbeafe;
+
+  --color-text-primary: #111827;
+  --color-text-secondary: #4b5563;
+  --color-text-tertiary: #9ca3af;
+  --color-text-success: #15803d;
+  --color-text-danger: #b91c1c;
+  --color-text-warning: #b45309;
+  --color-text-info: #1d4ed8;
+
+  --color-border-primary: #d1d5db;
+  --color-border-secondary: #e5e7eb;
+  --color-border-tertiary: #f3f4f6;
+  --color-border-success: #86efac;
+  --color-border-danger: #fca5a5;
+  --color-border-warning: #fcd34d;
+  --color-border-info: #93c5fd;
+}
+
+body {
+  font-family: 'Noto Sans Arabic', sans-serif;
+  background-color: #f3f4f6;
+}
+
+/* Fix native select/option elements - centralized dropdown fix */
+select,
+select option,
+select optgroup {
+  color: #111827 !important;
+  background-color: #ffffff !important;
+  -webkit-text-fill-color: #111827 !important;
+  text-fill-color: #111827 !important;
+  font-family: 'Noto Sans Arabic', 'Segoe UI', 'Arial', sans-serif !important;
+}
+
+select {
+  color-scheme: light !important;
+}
+
+select option {
+  padding: 4px 8px !important;
+}
+
+select option:checked {
+  background-color: #dbeafe !important;
+  color: #1d4ed8 !important;
+  font-weight: 600 !important;
+  -webkit-text-fill-color: #1d4ed8 !important;
+}
+
+select optgroup {
+  color: #111827 !important;
+  font-weight: 600 !important;
+}
+
+select:disabled {
+  color: #9ca3af !important;
+  opacity: 0.6 !important;
+}
