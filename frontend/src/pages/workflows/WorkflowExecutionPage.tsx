@@ -68,11 +68,15 @@ export default function WorkflowExecutionPage() {
   const allVersionFields = activeVersion?.fields ?? [];
   const stepFieldsBase = allVersionFields.filter((f: WorkflowField) => f.step_id === currentStep?.id) ?? [];
 
+  const resolveFieldId = (field: WorkflowField): string => {
+    return field.register_field_id ?? `custom_${field.id}`;
+  };
+
   // Merge step fields with dynamically shown fields from rule actions
   const stepFields = useMemo(() => {
-    const stepFieldIds = new Set(stepFieldsBase.map((f: WorkflowField) => resolveFieldIdStatic(f)));
+    const stepFieldIds = new Set(stepFieldsBase.map((f: WorkflowField) => resolveFieldId(f)));
     const shownFields = allVersionFields.filter((f: WorkflowField) => {
-      const fid = resolveFieldIdStatic(f);
+      const fid = resolveFieldId(f);
       return shownFieldIds.has(fid) && !stepFieldIds.has(fid);
     });
     return [...stepFieldsBase, ...shownFields];
@@ -90,14 +94,6 @@ export default function WorkflowExecutionPage() {
       });
     }
   }, [activeVersion?.id, execVersion]);
-
-  const resolveFieldId = (field: WorkflowField): string => {
-    return field.register_field_id ?? `custom_${field.id}`;
-  };
-
-  const resolveFieldIdStatic = (field: WorkflowField): string => {
-    return field.register_field_id ?? `custom_${field.id}`;
-  };
 
   const resolveFieldType = (field: WorkflowField): string => {
     const override = field.field_type;
