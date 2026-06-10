@@ -152,6 +152,14 @@ class VisibilityResolver
                     $fieldStates[$targetId]['is_visible'] = true;
                     break;
 
+                case 'enable':
+                    $fieldStates[$targetId]['is_visible'] = true;
+                    break;
+
+                case 'disable':
+                    $fieldStates[$targetId]['is_visible'] = false;
+                    break;
+
                 case 'set_lock':
                     $fieldStates[$targetId]['is_locked'] = !in_array($action['value'] ?? $action['resolved_value'] ?? true, ['false', false, '0', 0], true);
                     if ($fieldStates[$targetId]['is_locked']) {

@@ -42,7 +42,11 @@ import {
 import { CSS } from "@dnd-kit/utilities";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
+import { GovSelect, GovSelectMulti } from "@/components/ui/GovSelect";
 import CaseRuleBuilder from "@/components/rules/CaseRuleBuilder";
+import SimpleRuleBuilder from "@/components/rules/SimpleRuleBuilder";
+import RoutingRuleBuilder from "@/components/rules/RoutingRuleBuilder";
+import { classifyRule, type RuleEditorKind } from "@/components/rules/ruleEditorResolver";
 import ValidationRuleBuilder from "@/components/validation/ValidationRuleBuilder";
 import EnterpriseRuleBuilder from "@/components/validation/EnterpriseRuleBuilder";
 import type {
@@ -91,9 +95,20 @@ export default function WorkflowDesignerPage() {
   const deleteRuleMut = useDeleteWorkflowRule();
   const previewMut = usePreviewExecution();
 
-  const selectedVersion = versionDetail ?? versions?.find((v: WorkflowVersion) => v.status === "active") ?? versions?.[0];
+  // Authoritative selection: the version-list entry matching the chosen id (carries the
+  // correct, up-to-date status). versionDetail (a separately-fetched, possibly-stale query)
+  // is used only for rich tab content, and ONLY when it matches the selected id — otherwise
+  // status/id could disagree and the publish button would target the wrong version.
+  const selectedVersionMeta =
+    versions?.find((v: WorkflowVersion) => v.id === selectedVersionId) ??
+    versions?.find((v: WorkflowVersion) => v.status === "active") ??
+    versions?.[0];
 
-  const isDraft = selectedVersion?.status === "draft";
+  const selectedVersion =
+    versionDetail && versionDetail.id === selectedVersionMeta?.id ? versionDetail : selectedVersionMeta;
+
+  // isDraft is derived from the authoritative list status, never from the rich detail.
+  const isDraft = selectedVersionMeta?.status === "draft";
 
   const tabBtn = (tab: Tab, label: string) => (
     <button
@@ -1227,6 +1242,25 @@ function Toggle({ label, checked, onChange, highlight, highlightColor }: { label
   );
 }
 
+function UnknownRuleTypeError({ rule, onCancel }: { rule: any; onCancel: () => void }) {
+  return (
+    <div style={{ background: "var(--color-background-danger)", border: "1px solid var(--color-border-danger)", borderRadius: "var(--border-radius-lg)", padding: "18px" }}>
+      <div style={{ fontSize: "15px", fontWeight: 600, color: "var(--color-text-danger)", marginBottom: "8px" }}>
+        ⚠️ نوع قاعدة غير معروف
+      </div>
+      <div style={{ fontSize: "13px", color: "var(--color-text-danger)", marginBottom: "12px" }}>
+        تعذّر تحديد محرّر مناسب لهذه القاعدة من النوع المخزَّن. لم يتم فتح أي محرّر لتفادي إفساد البنية.
+      </div>
+      <div style={{ fontSize: "12px", fontFamily: "monospace", color: "var(--color-text-secondary)", background: "var(--color-background-primary)", padding: "8px", borderRadius: "6px", marginBottom: "12px" }}>
+        id: {rule?.id ?? "—"} · source: {rule?.source ?? "—"} · type: {String(rule?.type ?? "—")}
+      </div>
+      <button onClick={onCancel} style={{ padding: "6px 14px", fontSize: "13px", cursor: "pointer", fontFamily: "inherit", border: "0.5px solid var(--color-border-secondary)", borderRadius: "6px", background: "var(--color-background-primary)", color: "var(--color-text-primary)" }}>
+        إغلاق
+      </button>
+    </div>
+  );
+}
+
 function UnifiedRulesTab({
   workflowId,
   version,
@@ -1248,8 +1282,8 @@ function UnifiedRulesTab({
 }) {
   const [editingRule, setEditingRule] = useState<any | null>(null);
   const [showNewRule, setShowNewRule] = useState(false);
-  const [newRuleType, setNewRuleType] = useState<"enterprise" | "case_based" | "simple" | "validation" | null>(null);
-  const [filterType, setFilterType] = useState<"all" | "enterprise" | "case_based" | "simple" | "validation">("all");
+  const [newRuleType, setNewRuleType] = useState<"enterprise" | "case_based" | "simple" | "validation" | "routing" | null>(null);
+  const [filterType, setFilterType] = useState<"all" | "enterprise" | "case_based" | "simple" | "validation" | "routing">("all");
   const deleteValidationRule = useDeleteEnterpriseRule();
 
   if (!version) return <LoadingSpinner />;
@@ -1261,7 +1295,7 @@ function UnifiedRulesTab({
     const merged: Array<{
       id: string;
       name: string;
-      type: "enterprise" | "case_based" | "simple" | "validation";
+      type: RuleEditorKind;
       source: "workflow_rules" | "validation_rules";
       is_active: boolean;
       priority?: number;
@@ -1270,48 +1304,23 @@ function UnifiedRulesTab({
     }> = [];
 
     workflowRules.forEach((r: WorkflowRule) => {
-      const hasRuleConfig = (r as any).rule_config;
-      if (hasRuleConfig) {
-        merged.push({
-          id: r.id,
-          name: r.name || "قاعدة بدون اسم",
-          type: "enterprise",
-          source: "workflow_rules",
-          is_active: r.is_active,
-          priority: (r as any).priority ?? 5000,
-          sort_order: r.sort_order,
-          data: r,
-        });
-      } else if (r.rule_type === "case_based") {
-        merged.push({
-          id: r.id,
-          name: r.name || "قاعدة بدون اسم",
-          type: "case_based",
-          source: "workflow_rules",
-          is_active: r.is_active,
-          priority: undefined,
-          sort_order: r.sort_order,
-          data: r,
-        });
-      } else {
-        merged.push({
-          id: r.id,
-          name: r.name || "قاعدة بدون اسم",
-          type: "simple",
-          source: "workflow_rules",
-          is_active: r.is_active,
-          priority: undefined,
-          sort_order: r.sort_order,
-          data: r,
-        });
-      }
+      merged.push({
+        id: r.id,
+        name: r.name || "قاعدة بدون اسم",
+        type: classifyRule(r, "workflow_rules"),
+        source: "workflow_rules",
+        is_active: r.is_active,
+        priority: (r as any).priority,
+        sort_order: r.sort_order,
+        data: r,
+      });
     });
 
     validationRules.forEach((r: any) => {
       merged.push({
         id: r.id,
         name: r.name || "قاعدة بدون اسم",
-        type: r.rule_config ? "enterprise" : "validation",
+        type: classifyRule(r, "validation_rules"),
         source: "validation_rules",
         is_active: r.is_active,
         priority: r.priority ?? 5000,
@@ -1342,7 +1351,9 @@ function UnifiedRulesTab({
     case_based: { label: "Switch/Case", color: "info", icon: "🔀", bg: "var(--color-background-info)", text: "var(--color-text-info)", border: "var(--color-border-info)" },
     simple: { label: "بسيطة", color: "secondary", icon: "📋", bg: "var(--color-background-secondary)", text: "var(--color-text-secondary)", border: "var(--color-border-secondary)" },
     validation: { label: "تحقق", color: "warning", icon: "✓", bg: "var(--color-background-warning)", text: "var(--color-text-warning)", border: "var(--color-border-warning)" },
-  };
+    routing: { label: "توجيه", color: "warning", icon: "🔄", bg: "var(--color-background-warning)", text: "var(--color-text-warning)", border: "var(--color-border-warning)" },
+    unknown: { label: "غير معروف", color: "danger", icon: "⚠️", bg: "var(--color-background-danger)", text: "var(--color-text-danger)", border: "var(--color-border-danger)" },
+  } as const;
 
   const renderRuleSummary = (rule: typeof allRules[number]) => {
     switch (rule.type) {
@@ -1360,6 +1371,8 @@ function UnifiedRulesTab({
         return `IF ${JSON.stringify(rule.data.condition_logic).substring(0, 60)}... · ${(rule.data.actions ?? []).length} إجراء`;
       case "validation":
         return `النوع: ${rule.data.validation_type} · الاستجابة: ${rule.data.response_type}${rule.data.error_message_ar ? ` · ${rule.data.error_message_ar}` : ""}`;
+      case "routing":
+        return `توجيه · السجل: ${rule.data.target_register_id ?? "—"} · ${rule.data.route_config?.on_match?.action ?? "warn"}`;
       default:
         return "";
     }
@@ -1385,21 +1398,28 @@ function UnifiedRulesTab({
           return <CaseRuleBuilder {...commonProps} />;
         case "validation":
           return <ValidationRuleBuilder {...commonProps} />;
+        case "routing":
+          return <RoutingRuleBuilder {...commonProps} />;
         case "simple":
-          return <EnterpriseRuleBuilder {...commonProps} />;
+          return <SimpleRuleBuilder {...commonProps} />;
       }
     }
 
     if (editingRule) {
-      switch (editingRule.type) {
+      // The editor is chosen ONLY from the persisted, classified type — never guessed.
+      switch (editingRule.type as RuleEditorKind) {
         case "enterprise":
           return <EnterpriseRuleBuilder {...commonProps} />;
         case "case_based":
           return <CaseRuleBuilder {...commonProps} />;
         case "validation":
           return <ValidationRuleBuilder {...commonProps} />;
+        case "routing":
+          return <RoutingRuleBuilder {...commonProps} />;
         case "simple":
-          return <EnterpriseRuleBuilder {...commonProps} />;
+          return <SimpleRuleBuilder {...commonProps} />;
+        default:
+          return <UnknownRuleTypeError rule={editingRule} onCancel={handleCancel} />;
       }
     }
 
@@ -1441,6 +1461,7 @@ function UnifiedRulesTab({
               { type: "enterprise" as const, icon: "⚡", title: "قاعدة متقدمة", desc: "شروط متداخلة، 35+ إجراء، محاكاة، توجيه" },
               { type: "case_based" as const, icon: "🔀", title: "Switch/Case", desc: "قائمة حالات مع إجراءات لكل حالة" },
               { type: "validation" as const, icon: "✓", title: "قاعدة تحقق", desc: "فحص تكرار، بحث في السجلات، استعلامات" },
+              { type: "routing" as const, icon: "🔄", title: "قاعدة توجيه", desc: "بحث في سجل وتوجيه سير العمل" },
               { type: "simple" as const, icon: "📋", title: "قاعدة بسيطة", desc: "شرط واحد مع إجراءات" },
             ]).map((opt) => (
               <button
@@ -1484,6 +1505,7 @@ function UnifiedRulesTab({
             { key: "enterprise" as const, label: "متقدمة", count: allRules.filter((r) => r.type === "enterprise").length },
             { key: "case_based" as const, label: "Switch/Case", count: allRules.filter((r) => r.type === "case_based").length },
             { key: "validation" as const, label: "تحقق", count: allRules.filter((r) => r.type === "validation").length },
+            { key: "routing" as const, label: "توجيه", count: allRules.filter((r) => r.type === "routing").length },
             { key: "simple" as const, label: "بسيطة", count: allRules.filter((r) => r.type === "simple").length },
           ]).map((f) => (
             <button
@@ -1625,36 +1647,27 @@ function PreviewTab({
       case "select":
       case "radio":
         return (
-          <select
+          <GovSelect
+            options={options.map((opt: string | { value: string; label?: string; label_ar?: string }) => ({
+              value: typeof opt === "string" ? opt : opt.value,
+              label: typeof opt === "string" ? opt : (opt.label_ar ?? opt.label ?? opt.value),
+            }))}
             value={val}
-            onChange={(e) => handleChange(fieldId, e.target.value)}
-            style={previewInputStyle}
-          >
-            <option value="">اختر...</option>
-            {options.map((opt: string | { value: string; label?: string; label_ar?: string }) => {
-              const optValue = typeof opt === "string" ? opt : opt.value;
-              const optLabel = typeof opt === "string" ? opt : (opt.label_ar ?? opt.label ?? opt.value);
-              return <option key={optValue} value={optValue}>{optLabel}</option>;
-            })}
-          </select>
+            onChange={(v) => handleChange(fieldId, v)}
+            placeholder="اختر..."
+          />
         );
       case "multi_select":
         return (
-          <select
-            multiple
+          <GovSelectMulti
+            options={options.map((opt: string | { value: string; label?: string; label_ar?: string }) => ({
+              value: typeof opt === "string" ? opt : opt.value,
+              label: typeof opt === "string" ? opt : (opt.label_ar ?? opt.label ?? opt.value),
+            }))}
             value={Array.isArray(val) ? val : val ? JSON.parse(val) : []}
-            onChange={(e) => {
-              const selected = Array.from(e.target.selectedOptions, (o) => o.value);
-              handleChange(fieldId, JSON.stringify(selected));
-            }}
-            style={{ ...previewInputStyle, minHeight: "80px" }}
-          >
-            {options.map((opt: string | { value: string; label?: string; label_ar?: string }) => {
-              const optValue = typeof opt === "string" ? opt : opt.value;
-              const optLabel = typeof opt === "string" ? opt : (opt.label_ar ?? opt.label ?? opt.value);
-              return <option key={optValue} value={optValue}>{optLabel}</option>;
-            })}
-          </select>
+            onChange={(vals) => handleChange(fieldId, JSON.stringify(vals))}
+            placeholder="اختر..."
+          />
         );
       case "checkbox":
         return (

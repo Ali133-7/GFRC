@@ -20,6 +20,7 @@ import type { WorkflowRule, RuleCase, RuleAction, WorkflowField } from "@/types/
 import { workflowVersionApi } from "@/api/workflows";
 import { useOfficialFees } from "@/hooks/useFees";
 import type { OfficialFee } from "@/api/fees";
+import { fieldKey, findFieldByKey, fieldDisplayLabel } from "./fieldKey";
 
 interface CaseRuleBuilderProps {
   workflowId: string;
@@ -358,7 +359,7 @@ function ActionPill({
         </span>
         {action.target_field_id && (
           <span style={{ fontSize: "11px", color: "var(--color-text-secondary)" }}>
-            → {allFields.find((f) => f.id === action.target_field_id)?.label ?? action.target_field_id}
+            → {findFieldByKey(allFields, action.target_field_id)?.label ?? action.target_field_id}
           </span>
         )}
         {action.value && (
@@ -390,7 +391,7 @@ function ActionPill({
                 >
                   <option value="">اختر الحقل...</option>
                   {allFields.map((f) => (
-                    <option key={f.id} value={f.id}>{f.label}</option>
+                    <option key={f.id} value={fieldKey(f)}>{fieldDisplayLabel(f)}</option>
                   ))}
                 </select>
               </div>
@@ -428,7 +429,7 @@ function ActionPill({
                       ...action,
                       fee_code: selected?.fee_code ?? e.target.value,
                       fee_name: selected?.name_ar ?? "",
-                      value: selected?.amount ?? 0,
+                      value: selected?.resolved_amount ?? selected?.amount ?? 0,
                     });
                   }}
                   style={inputStyle}
@@ -566,7 +567,7 @@ export default function CaseRuleBuilder({
   );
 
   const triggerField = useMemo(
-    () => fields.find((f) => f.id === triggerFieldId) ?? null,
+    () => findFieldByKey(fields, triggerFieldId) ?? null,
     [fields, triggerFieldId]
   );
 
@@ -749,7 +750,7 @@ export default function CaseRuleBuilder({
           <select value={triggerFieldId} onChange={(e) => setTriggerFieldId(e.target.value)} style={{ ...inputStyle, width: "100%" }}>
             <option value="">اختر الحقل...</option>
             {fields.map((f) => (
-              <option key={f.id} value={f.id}>{f.label} ({f.field_type ?? f.registerField?.field_type ?? "text"})</option>
+              <option key={f.id} value={fieldKey(f)}>{fieldDisplayLabel(f)} ({f.field_type ?? f.registerField?.field_type ?? "text"})</option>
             ))}
           </select>
         </div>

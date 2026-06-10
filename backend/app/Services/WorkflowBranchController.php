@@ -337,51 +337,55 @@ class WorkflowBranchController
         string $startedBy,
         array $context = []
     ): WorkflowExecution {
-        $execution = new WorkflowExecution();
-        $execution->id = (string) Str::uuid();
-        $execution->workflow_version_id = $targetVersion->id;
-        $execution->register_id = $sourceExecution->register_id;
-        $execution->status = 'in_progress';
-        $execution->mode = $sourceExecution->getMode();
-        $execution->current_step_index = 0;
-        $execution->values_snapshot = $preservedValues;
-        $execution->started_by = $startedBy;
-        $execution->started_at = now();
-        $execution->ip_address = $context['ip_address'] ?? null;
-        $execution->user_agent = $context['user_agent'] ?? null;
+        return \Illuminate\Support\Facades\DB::transaction(function () use ($sourceExecution, $targetVersion, $preservedValues, $startedBy, $context) {
+            $sourceExecution->lockForUpdate()->find($sourceExecution->id);
 
-        // Set branch state
-        $execution->branch_state = [
-            'active_branch' => 'redirected',
-            'redirect_to_workflow_id' => null,
-            'redirect_to_step_id' => null,
-            'paused' => false,
-            'pause_reason' => null,
-            'original_execution_id' => $sourceExecution->id,
-        ];
+            $execution = new WorkflowExecution();
+            $execution->id = (string) Str::uuid();
+            $execution->workflow_version_id = $targetVersion->id;
+            $execution->register_id = $sourceExecution->register_id;
+            $execution->status = 'in_progress';
+            $execution->mode = $sourceExecution->getMode();
+            $execution->current_step_index = 0;
+            $execution->values_snapshot = $preservedValues;
+            $execution->started_by = $startedBy;
+            $execution->started_at = now();
+            $execution->ip_address = $context['ip_address'] ?? null;
+            $execution->user_agent = $context['user_agent'] ?? null;
 
-        // Preserve values
-        $execution->preserved_values = $preservedValues;
-        $execution->state_mapping = $sourceExecution->getStateMapping();
+            // Set branch state
+            $execution->branch_state = [
+                'active_branch' => 'redirected',
+                'redirect_to_workflow_id' => null,
+                'redirect_to_step_id' => null,
+                'paused' => false,
+                'pause_reason' => null,
+                'original_execution_id' => $sourceExecution->id,
+            ];
 
-        // Log the redirect event
-        $execution->routing_history = [[
-            'event' => 'redirected_from',
-            'from_execution_id' => $sourceExecution->id,
-            'from_workflow_id' => $sourceExecution->version->workflow_id,
-            'to_workflow_id' => $targetVersion->workflow_id,
-            'timestamp' => now()->toISOString(),
-        ]];
+            // Preserve values
+            $execution->preserved_values = $preservedValues;
+            $execution->state_mapping = $sourceExecution->getStateMapping();
 
-        $execution->save();
+            // Log the redirect event
+            $execution->routing_history = [[
+                'event' => 'redirected_from',
+                'from_execution_id' => $sourceExecution->id,
+                'from_workflow_id' => $sourceExecution->version->workflow_id,
+                'to_workflow_id' => $targetVersion->workflow_id,
+                'timestamp' => now()->toISOString(),
+            ]];
 
-        // Log on source execution too
-        $sourceExecution->addRoutingEvent([
-            'event' => 'redirected_to',
-            'to_execution_id' => $execution->id,
-            'to_workflow_id' => $targetVersion->workflow_id,
-        ]);
+            $execution->save();
 
-        return $execution;
+            // Log on source execution too
+            $sourceExecution->addRoutingEvent([
+                'event' => 'redirected_to',
+                'to_execution_id' => $execution->id,
+                'to_workflow_id' => $targetVersion->workflow_id,
+            ]);
+
+            return $execution;
+        });
     }
 }

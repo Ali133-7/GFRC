@@ -18,12 +18,11 @@ class Workflow extends Model
 
     protected $fillable = [
         'register_id', 'code', 'name_ar', 'name_en', 'description',
-        'icon', 'is_active', 'current_version', 'sort_order', 'created_by',
+        'icon', 'is_active', 'sort_order', 'created_by',
     ];
 
     protected $casts = [
         'is_active' => 'boolean',
-        'current_version' => 'integer',
         'sort_order' => 'integer',
     ];
 
@@ -72,8 +71,6 @@ class Workflow extends Model
 
     public function currentVersionModel(): ?WorkflowVersion
     {
-        return $this->versions()
-            ->where('version', $this->current_version)
-            ->first();
+        return $this->activeVersion();
     }
 }

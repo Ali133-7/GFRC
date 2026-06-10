@@ -20,6 +20,7 @@ class ValidationRule extends Model
         'sql_query', 'sql_condition', 'route_config', 'lookup_config', 'field_effects', 'rule_config',
         'response_type', 'error_message_ar', 'error_message_en',
         'confirm_message_ar', 'confirm_message_en',
+        'expectation',
         'sort_order', 'priority', 'is_active',
     ];
 
@@ -30,6 +31,7 @@ class ValidationRule extends Model
         'route_config' => 'array',
         'lookup_config' => 'array',
         'field_effects' => 'array',
+        'expectation' => 'string',
         'rule_config' => 'array',
         'is_active' => 'boolean',
         'sort_order' => 'integer',

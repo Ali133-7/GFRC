@@ -45,14 +45,20 @@ class DynamicOptionSource
             $whereClause = $parsed['where'] ?? [];
             $orderBy = $parsed['order_by'] ?? $labelColumn;
 
-            if (empty($table)) {
+            if (empty($table) || !$this->isSafeIdentifier($table)) {
+                return [];
+            }
+
+            if (!$this->isSafeIdentifier($labelColumn) || !$this->isSafeIdentifier($valueColumn) || !$this->isSafeIdentifier($orderBy)) {
                 return [];
             }
 
             $query = DB::table($table)->select($valueColumn, $labelColumn);
 
             foreach ($whereClause as $column => $value) {
-                $query->where($column, $value);
+                if ($this->isSafeIdentifier($column)) {
+                    $query->where($column, $value);
+                }
             }
 
             $query->orderBy($orderBy);
@@ -92,7 +98,9 @@ class DynamicOptionSource
                 return [];
             }
 
-            $request = Http::withHeaders($headers);
+            $request = Http::withHeaders($headers)
+                ->timeout(10)
+                ->connectTimeout(5);
 
             $response = match (strtoupper($method)) {
                 'POST' => $request->post($url, $body),
@@ -140,7 +148,16 @@ class DynamicOptionSource
             $method = $parsed['method'] ?? 'getOptions';
             $params = $parsed['params'] ?? [];
 
-            if (empty($serviceClass) || !class_exists($serviceClass)) {
+            $allowedServices = config('workflow.allowed_option_services', []);
+
+            if (empty($serviceClass) || !in_array($serviceClass, $allowedServices, true)) {
+                \Illuminate\Support\Facades\Log::warning('DynamicOptionSource: rejected unauthorized service class', [
+                    'class' => $serviceClass,
+                ]);
+                return [];
+            }
+
+            if (!class_exists($serviceClass)) {
                 return [];
             }
 
@@ -189,5 +206,13 @@ class DynamicOptionSource
         }
 
         return $current;
+    }
+
+    /**
+     * Validate that an identifier contains only safe characters.
+     */
+    protected function isSafeIdentifier(string $name): bool
+    {
+        return (bool) preg_match('/^[a-zA-Z_][a-zA-Z0-9_]*$/', $name);
     }
 }

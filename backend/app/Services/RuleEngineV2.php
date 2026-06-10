@@ -195,8 +195,8 @@ class RuleEngineV2
      */
     protected function applyActionToWorkingValues(array $action, array &$workingValues): void
     {
-        $act = $action['action'] ?? '';
-        $targetId = $action['target_field_id'] ?? null;
+        $act = $action['action'] ?? $action['type'] ?? '';
+        $targetId = $action['target_field_id'] ?? $action['field_id'] ?? null;
         if (!$targetId) return;
 
         if ($act === 'set_value' || $act === 'override_value') {
@@ -240,6 +240,14 @@ class RuleEngineV2
         $fieldId = $condition['field_id'] ?? null;
         $fieldValue = $fieldId !== null ? ($values[$fieldId] ?? null) : null;
         $compareValue = $condition['value'] ?? null;
+
+        if ($fieldValue === null && !in_array($operator, ['is_empty', 'is_not_empty'], true)) {
+            \Illuminate\Support\Facades\Log::warning('RuleEngineV2: null field value in condition', [
+                'field_id' => $fieldId,
+                'operator' => $operator,
+            ]);
+            throw new \App\Exceptions\Workflow\RuleEvaluationException("Null value for field {$fieldId} with operator {$operator}");
+        }
 
         return $this->compareValues($fieldValue, $operator, $compareValue);
     }
@@ -354,13 +362,14 @@ class RuleEngineV2
     protected function resolveAction(array $action, array $values, array $context): array
     {
         $resolved = $action;
+        $resolved['action'] = $action['action'] ?? $action['type'] ?? '';
         $ctx = $this->getContext();
 
-        switch ($action['action'] ?? '') {
+        switch ($resolved['action']) {
             case 'set_fee':
                 $feeCode = $action['fee_code'] ?? null;
                 if ($feeCode) {
-                    $feeVersion = $this->feeEngine->resolve($feeCode);
+                    $feeVersion = $this->feeEngine->resolveActive($feeCode);
                     $amount = $feeVersion?->amount ?? '0';
                     $resolved['resolved_amount'] = $amount;
                     $resolved['fee_name'] = $feeVersion?->fee?->name_ar ?? $feeCode;

@@ -67,6 +67,56 @@ class FeeEngine
     }
 
     /**
+     * Resolve a fee code to its active version, ensuring the parent OfficialFee is also active.
+     * This is the authoritative resolution method for financial execution.
+     * 
+     * Falls back to OfficialFee.amount if no FeeVersion exists (for backward compatibility
+     * with fees created before the versioning system was introduced).
+     */
+    public function resolveActive(string $feeCode, ?DateTimeInterface $asOf = null): ?FeeVersion
+    {
+        $asOf ??= now();
+
+        // First, try to find an active FeeVersion
+        $feeVersion = FeeVersion::whereHas('fee', function ($q) use ($feeCode) {
+            $q->where('fee_code', $feeCode)
+              ->where('is_active', true);
+        })
+            ->where('effective_from', '<=', $asOf)
+            ->where(function ($q) use ($asOf) {
+                $q->whereNull('effective_to')
+                    ->orWhere('effective_to', '>=', $asOf);
+            })
+            ->orderByDesc('version')
+            ->first();
+
+        if ($feeVersion) {
+            return $feeVersion;
+        }
+
+        // Fallback: use OfficialFee.amount directly if no FeeVersion exists
+        $officialFee = \App\Models\OfficialFee::where('fee_code', $feeCode)
+            ->where('is_active', true)
+            ->first();
+
+        if (!$officialFee) {
+            return null;
+        }
+
+        // Create a synthetic FeeVersion from OfficialFee data
+        $feeVersion = new FeeVersion();
+        $feeVersion->id = $officialFee->id;
+        $feeVersion->fee_id = $officialFee->id;
+        $feeVersion->version = $officialFee->version ?? 1;
+        $feeVersion->amount = $officialFee->amount;
+        $feeVersion->effective_from = $officialFee->effective_from ?? $asOf;
+        $feeVersion->effective_to = $officialFee->effective_to;
+        $feeVersion->setRelation('fee', $officialFee);
+
+        return $feeVersion;
+    }
+
+    /**
      * Resolve multiple fee codes at once.
      *
      * @return array<string, FeeVersion|null>

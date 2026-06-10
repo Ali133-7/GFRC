@@ -2,9 +2,11 @@
 
 namespace App\Services;
 
+use App\Exceptions\Workflow\FinancialIntegrityException;
 use App\Models\ValidationRule;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
+use Illuminate\Support\Facades\Log;
 
 /**
  * Enterprise Dynamic Rule Engine V4
@@ -54,6 +56,7 @@ class EnterpriseRuleEngine
         $warnings = [];
         $errors = [];
         $stopEvaluation = false;
+        $financialTrace = [];
 
         // Process enterprise rules first (higher priority)
         foreach ($enterpriseRules as $rule) {
@@ -82,6 +85,9 @@ class EnterpriseRuleEngine
 
             $results[] = $result;
             if ($result['matched']) {
+                if (!empty($result['financial_trace'])) {
+                    $financialTrace = array_merge($financialTrace, $result['financial_trace']);
+                }
                 if (isset($result['routing'])) {
                     $routingDecisions[] = [
                         'rule_id' => $rule->id,
@@ -105,14 +111,14 @@ class EnterpriseRuleEngine
 
             if ($rule->rule_type === 'case_based') {
                 $cases = $rule->cases ?? [];
-                $defaultActions = $rule->default_actions ?? [];
+                $defaultActions = $this->convertWorkflowActions($rule->default_actions ?? []);
                 $triggerFieldId = $rule->trigger_field_id;
                 $triggerValue = $values[$triggerFieldId] ?? null;
 
                 $caseMatched = false;
                 foreach ($cases as $case) {
                     $caseValue = $case['value'] ?? null;
-                    $caseActions = $case['actions'] ?? [];
+                    $caseActions = $this->convertWorkflowActions($case['actions'] ?? []);
                     $compoundCondition = $case['compound_condition'] ?? null;
 
                     $matches = false;
@@ -126,6 +132,9 @@ class EnterpriseRuleEngine
                     if ($matches) {
                         $caseMatched = true;
                         $execResult = $this->executeActions($caseActions, $values, $finalValues, $finalFieldStates, $context);
+                        if (!empty($execResult['financial_trace'])) {
+                            $financialTrace = array_merge($financialTrace, $execResult['financial_trace']);
+                        }
                         $results[] = [
                             'rule_id' => $rule->id,
                             'rule_name' => $rule->name,
@@ -138,6 +147,7 @@ class EnterpriseRuleEngine
                             'messages' => $execResult['messages'],
                             'routing' => $execResult['routing'] ?? null,
                             'stop_evaluation' => $execResult['stop'] ?? false,
+                            'status_change' => $execResult['status_change'] ?? null,
                             'condition_trace' => [
                                 'trigger_field' => $triggerFieldId,
                                 'trigger_value' => $triggerValue,
@@ -161,6 +171,9 @@ class EnterpriseRuleEngine
 
                 if (!$caseMatched && !empty($defaultActions)) {
                     $execResult = $this->executeActions($defaultActions, $values, $finalValues, $finalFieldStates, $context);
+                    if (!empty($execResult['financial_trace'])) {
+                        $financialTrace = array_merge($financialTrace, $execResult['financial_trace']);
+                    }
                     $results[] = [
                         'rule_id' => $rule->id,
                         'rule_name' => $rule->name,
@@ -173,6 +186,7 @@ class EnterpriseRuleEngine
                         'messages' => $execResult['messages'],
                         'routing' => $execResult['routing'] ?? null,
                         'stop_evaluation' => $execResult['stop'] ?? false,
+                        'status_change' => $execResult['status_change'] ?? null,
                         'condition_trace' => [
                             'trigger_field' => $triggerFieldId,
                             'trigger_value' => $triggerValue,
@@ -199,6 +213,7 @@ class EnterpriseRuleEngine
                         'messages' => [],
                         'routing' => null,
                         'stop_evaluation' => false,
+                        'status_change' => null,
                         'condition_trace' => [
                             'trigger_field' => $triggerFieldId,
                             'trigger_value' => $triggerValue,
@@ -212,21 +227,7 @@ class EnterpriseRuleEngine
                 $ruleActions = $rule->actions ?? [];
 
                 // Convert WorkflowRule action format to enterprise format
-                $convertedActions = [];
-                foreach ($ruleActions as $act) {
-                    $converted = [
-                        'type' => $act['action'] ?? $act['type'] ?? null,
-                        'field_id' => $act['target_field_id'] ?? $act['field_id'] ?? null,
-                        'value' => $act['value'] ?? $act['resolved_value'] ?? null,
-                    ];
-                    // Preserve additional fields
-                    foreach ($act as $key => $val) {
-                        if (!in_array($key, ['action', 'target_field_id'])) {
-                            $converted[$key] = $val;
-                        }
-                    }
-                    $convertedActions[] = $converted;
-                }
+                $convertedActions = $this->convertWorkflowActions($ruleActions);
 
                 $result = $this->evaluateRule(
                     $rule->id,
@@ -242,6 +243,9 @@ class EnterpriseRuleEngine
                     $context
                 );
                 $results[] = $result;
+                if ($result['matched'] && !empty($result['financial_trace'])) {
+                    $financialTrace = array_merge($financialTrace, $result['financial_trace']);
+                }
                 if ($result['matched'] && isset($result['routing'])) {
                     $routingDecisions[] = [
                         'rule_id' => $rule->id,
@@ -267,6 +271,7 @@ class EnterpriseRuleEngine
             'routing_decisions' => $routingDecisions,
             'warnings' => $warnings,
             'errors' => $errors,
+            'financial_trace' => $financialTrace,
             'execution_time_ms' => $executionTime,
         ];
     }
@@ -300,35 +305,44 @@ class EnterpriseRuleEngine
             'routing' => null,
             'stop_evaluation' => false,
             'condition_trace' => [],
+            'financial_trace' => [],
         ];
 
         if (empty($conditions)) {
             return $result;
         }
 
-        $matched = $this->evaluateConditions($conditions, $originalValues, $context);
+        $matched = $this->evaluateConditions($conditions, $finalValues, $context);
         $result['matched'] = $matched;
         $result['conditions_matched'] = $matched ? $result['conditions_evaluated'] : 0;
 
         // Build condition trace for debugging
-        $result['condition_trace'] = $this->buildConditionTrace($conditions, $originalValues);
+        $result['condition_trace'] = $this->buildConditionTrace($conditions, $finalValues);
 
         if ($matched) {
             $execResult = $this->executeActions($actions, $originalValues, $finalValues, $finalFieldStates, $context);
             $result['executed_actions'] = $execResult['executed'];
             $result['field_effects'] = $execResult['field_effects'] ?? [];
             $result['messages'] = $execResult['messages'];
+            $result['financial_trace'] = $execResult['financial_trace'] ?? [];
             if (isset($execResult['routing'])) {
                 $result['routing'] = $execResult['routing'];
             }
             if ($execResult['stop']) {
                 $result['stop_evaluation'] = true;
             }
+            if ($execResult['status_change']) {
+                $result['status_change'] = $execResult['status_change'];
+            }
         } elseif (!empty($elseActions)) {
             $execResult = $this->executeActions($elseActions, $originalValues, $finalValues, $finalFieldStates, $context);
             $result['executed_actions'] = $execResult['executed'];
             $result['field_effects'] = $execResult['field_effects'] ?? [];
             $result['messages'] = $execResult['messages'];
+            $result['financial_trace'] = $execResult['financial_trace'] ?? [];
+            if ($execResult['status_change']) {
+                $result['status_change'] = $execResult['status_change'];
+            }
         }
 
         return $result;
@@ -436,6 +450,11 @@ class EnterpriseRuleEngine
             return $this->evaluateConditionLogic($conditions, $values, $context);
         }
 
+        // Check if this is a simple condition passed directly: { operator, field_id, value }
+        if (isset($conditions['field_id']) && isset($conditions['operator']) && !isset($conditions['conditions'])) {
+            return $this->evaluateSimpleCondition($conditions, $values, $context);
+        }
+
         // If it's an array of conditions, default to AND
         $logic = 'and';
         if (is_array($conditions) && isset($conditions[0])) {
@@ -527,6 +546,20 @@ class EnterpriseRuleEngine
         $expectedValue = $condition['value'] ?? null;
         $actualValue = $values[$fieldId] ?? null;
 
+        // Normalize operator aliases
+        $operatorMap = [
+            'gt' => 'greater_than',
+            'gte' => 'greater_or_equal',
+            'gteq' => 'greater_or_equal',
+            'lt' => 'less_than',
+            'lte' => 'less_or_equal',
+            'lteq' => 'less_or_equal',
+            'eq' => 'equals',
+            'neq' => 'not_equals',
+            'ne' => 'not_equals',
+        ];
+        $operator = $operatorMap[$operator] ?? $operator;
+
         // Handle database lookup operators
         if (in_array($operator, ['database_exists', 'database_not_exists'])) {
             return $this->evaluateDatabaseCondition($condition, $values, $context);
@@ -540,16 +573,16 @@ class EnterpriseRuleEngine
                 return (string) $actualValue !== (string) $expectedValue;
 
             case 'greater_than':
-                return (float) $actualValue > (float) $expectedValue;
+                return bccomp($this->toDecimalString($actualValue), $this->toDecimalString($expectedValue), 3) > 0;
 
             case 'greater_or_equal':
-                return (float) $actualValue >= (float) $expectedValue;
+                return bccomp($this->toDecimalString($actualValue), $this->toDecimalString($expectedValue), 3) >= 0;
 
             case 'less_than':
-                return (float) $actualValue < (float) $expectedValue;
+                return bccomp($this->toDecimalString($actualValue), $this->toDecimalString($expectedValue), 3) < 0;
 
             case 'less_or_equal':
-                return (float) $actualValue <= (float) $expectedValue;
+                return bccomp($this->toDecimalString($actualValue), $this->toDecimalString($expectedValue), 3) <= 0;
 
             case 'contains':
                 return str_contains((string) $actualValue, (string) $expectedValue);
@@ -564,10 +597,15 @@ class EnterpriseRuleEngine
                 return str_ends_with((string) $actualValue, (string) $expectedValue);
 
             case 'between':
-                $val = (float) $actualValue;
-                $start = (float) $expectedValue;
-                $end = (float) ($condition['value_end'] ?? $expectedValue);
-                return $val >= $start && $val <= $end;
+                $val = $this->toDecimalString($actualValue);
+                if (is_array($expectedValue)) {
+                    $start = $this->toDecimalString($expectedValue[0] ?? '0');
+                    $end = $this->toDecimalString($expectedValue[1] ?? '0');
+                } else {
+                    $start = $this->toDecimalString($expectedValue);
+                    $end = $this->toDecimalString($condition['value_end'] ?? $expectedValue);
+                }
+                return bccomp($val, $start, 3) >= 0 && bccomp($val, $end, 3) <= 0;
 
             case 'in':
                 $list = is_array($expectedValue) ? $expectedValue : json_decode($expectedValue, true) ?? [];
@@ -639,15 +677,52 @@ class EnterpriseRuleEngine
     }
 
     /**
+     * Convert WorkflowRule action format ({action, target_field_id, ...}) to the
+     * enterprise executeActions format ({type, field_id, value, ...}).
+     *
+     * Applied uniformly to simple rule actions, case actions, and default actions —
+     * previously only simple-rule actions were converted, so case/default actions
+     * reached executeActions with a null `type` and were silently dropped (the matched
+     * case produced no field effects).
+     */
+    protected function convertWorkflowActions(array $actions): array
+    {
+        $converted = [];
+        foreach ($actions as $act) {
+            if (!is_array($act)) {
+                continue;
+            }
+            $c = [
+                'type' => $act['action'] ?? $act['type'] ?? null,
+                'field_id' => $act['target_field_id'] ?? $act['field_id'] ?? null,
+                'value' => $act['value'] ?? $act['resolved_value'] ?? null,
+            ];
+            // Preserve all other keys (fee_code, formula, options, target_step_id, …).
+            foreach ($act as $key => $val) {
+                if ($key !== 'action') {
+                    $c[$key] = $val;
+                }
+            }
+            $converted[] = $c;
+        }
+        return $converted;
+    }
+
+    /**
      * Execute actions and return results.
      */
-    protected function executeActions(array $actions, array $originalValues, array &$finalValues, array &$finalFieldStates, array $context = []): array
+    /**
+     * @internal Not part of the public API — exposed for testing only.
+     */
+    public function executeActions(array $actions, array $originalValues, array &$finalValues, array &$finalFieldStates, array $context = []): array
     {
         $executed = [];
         $messages = [];
         $routing = null;
         $fieldEffects = [];
         $stop = false;
+        $statusChange = null;
+        $financialTrace = [];
 
         foreach ($actions as $action) {
             $actionType = $action['type'] ?? null;
@@ -687,14 +762,24 @@ class EnterpriseRuleEngine
                     break;
 
                 case 'calculate':
-                    if ($fieldId && $value) {
-                        $calculated = $this->calculateExpression((string) $value, $finalValues);
+                    if ($fieldId) {
+                        $formula = $value ?? $action['formula'] ?? null;
+                        if (!$formula) break;
+                        $calculated = $this->calculateExpression((string) $formula, $finalValues);
                         $finalValues[$fieldId] = (string) $calculated;
                         $executed[] = $action['id'] ?? $actionType;
                         $fieldEffects[] = [
                             'field_id' => $fieldId,
                             'action' => 'calculate',
                             'formula' => $value,
+                            'result' => $calculated,
+                        ];
+                        $financialTrace[] = [
+                            'step' => 'formula_calculation',
+                            'field_id' => $fieldId,
+                            'fee_code' => null,
+                            'base_amount' => null,
+                            'formula' => $formula,
                             'result' => $calculated,
                         ];
                     }
@@ -784,29 +869,58 @@ class EnterpriseRuleEngine
                     if ($fieldId) {
                         $finalValues[$fieldId] = null;
                         $executed[] = $action['id'] ?? $actionType;
+                        $fieldEffects[] = [
+                            'field_id' => $fieldId,
+                            'action' => 'clear_value',
+                            'value' => null,
+                        ];
                     }
                     break;
 
                 case 'copy_value':
+                    $sourceField = $action['field_id'] ?? null;
                     $targetField = $action['target_field_id'] ?? null;
-                    if ($fieldId && $targetField && isset($finalValues[$fieldId])) {
-                        $finalValues[$targetField] = $finalValues[$fieldId];
+                    if ($sourceField && $targetField && isset($finalValues[$sourceField])) {
+                        $finalValues[$targetField] = $finalValues[$sourceField];
                         $executed[] = $action['id'] ?? $actionType;
+                        $fieldEffects[] = [
+                            'field_id' => $targetField,
+                            'action' => 'copy_value',
+                            'value' => $finalValues[$sourceField],
+                        ];
                     }
                     break;
 
                 case 'set_fee':
-                    if ($fieldId && $value) {
-                        $feeCode = (string) $value;
-                        $officialFee = \App\Models\OfficialFee::where('fee_code', $feeCode)
-                            ->where('is_active', true)
-                            ->first();
+                    if ($fieldId) {
+                        // Resolve the fee CODE. Prefer the explicit `fee_code` (Case/Simple
+                        // builders, which also carry the amount in `value` for display only).
+                        // Fall back to `value` for the Enterprise builder convention where the
+                        // code itself is stored in `value`. This prevents using a fee AMOUNT
+                        // (e.g. "25000.000") as a code.
+                        $feeCode = (string) (!empty($action['fee_code']) ? $action['fee_code'] : ($value ?? ''));
+                        if ($feeCode === '') {
+                            break;
+                        }
 
-                        $feeVersion = $officialFee
-                            ? $officialFee->feeVersions()->activeAt()->orderByDesc('version')->first()
-                            : null;
+                        // Use FeeEngine::resolveActive — the SAME method used by listActive API.
+                        // This guarantees the builder display and execution resolution are identical.
+                        $feeEngine = app(FeeEngine::class);
+                        $feeVersion = $feeEngine->resolveActive($feeCode);
 
-                        $amount = $feeVersion?->amount ?? '0';
+                        if (!$feeVersion) {
+                            Log::error('set_fee: fee resolution failed', [
+                                'fee_code' => $feeCode,
+                                'execution_id' => $context['execution_id'] ?? null,
+                                'hint' => 'Fee code does not exist, is inactive, or has no active version.',
+                            ]);
+                            throw new FinancialIntegrityException(
+                                "Fee code [{$feeCode}] does not exist, is inactive, or has no active version for date " . now()->toDateString()
+                            );
+                        }
+
+                        $officialFee = $feeVersion->fee;
+                        $amount = (string) $feeVersion->amount;
                         $finalValues[$fieldId] = $amount;
                         $executed[] = $action['id'] ?? $actionType;
                         $fieldEffects[] = [
@@ -814,23 +928,139 @@ class EnterpriseRuleEngine
                             'action' => 'set_fee',
                             'fee_code' => $feeCode,
                             'amount' => $amount,
-                            'fee_name' => $officialFee?->name_ar ?? $feeCode,
+                            'fee_version_id' => $feeVersion->id,
+                            'fee_name' => $officialFee->name_ar ?? $feeCode,
+                        ];
+                        $financialTrace[] = [
+                            'step' => 'fee_resolution',
+                            'field_id' => $fieldId,
+                            'fee_code' => $feeCode,
+                            'fee_version_id' => $feeVersion->id,
+                            'base_amount' => $amount,
+                            'formula' => null,
+                            'result' => $amount,
                         ];
                     }
                     break;
 
                 case 'apply_discount':
-                    if ($fieldId && $value) {
-                        $baseValue = (float) ($finalValues[$fieldId] ?? 0);
-                        $discountPercent = (float) $value;
-                        $discountAmount = $baseValue * ($discountPercent / 100);
-                        $finalValues[$fieldId] = (string) max(0, $baseValue - $discountAmount);
+                    if ($fieldId) {
+                        $discountValue = $action['discount_value'] ?? $action['value'] ?? null;
+                        if ($discountValue === null) break;
+                        $discountType = $action['discount_type'] ?? 'percentage';
+                        $scale = 3;
+                        $baseValue = $this->toDecimalString($finalValues[$fieldId] ?? '0');
+                        $discountVal = $this->toDecimalString($discountValue);
+                        $discountAmount = $discountType === 'percentage'
+                            ? bcmul($baseValue, bcdiv($discountVal, '100.0', $scale), $scale)
+                            : $discountVal;
+                        $finalValue = bcsub($baseValue, $discountAmount, $scale);
+                        if (bccomp($finalValue, '0.0', $scale) < 0) {
+                            $finalValue = '0.' . str_repeat('0', $scale);
+                        }
+                        $finalValues[$fieldId] = $finalValue;
                         $executed[] = $action['id'] ?? $actionType;
                         $fieldEffects[] = [
                             'field_id' => $fieldId,
                             'action' => 'apply_discount',
-                            'discount_percent' => $discountPercent,
+                            'value' => $finalValue,
+                            'discount_percent' => $discountType === 'percentage' ? $discountVal : null,
                             'discount_amount' => $discountAmount,
+                        ];
+                        $financialTrace[] = [
+                            'step' => 'discount',
+                            'field_id' => $fieldId,
+                            'type' => $discountType,
+                            'value' => $discountVal,
+                            'applied_to' => $baseValue,
+                            'discount_amount' => $discountAmount,
+                            'result' => $finalValue,
+                        ];
+                    }
+                    break;
+
+                case 'set_field_type':
+                    if ($fieldId) {
+                        $newType = $action['value'] ?? $action['field_type'] ?? 'text';
+                        $finalFieldStates[$fieldId] = array_merge(
+                            $finalFieldStates[$fieldId] ?? ['is_visible' => true, 'is_required' => false, 'is_readonly' => false],
+                            ['field_type' => $newType]
+                        );
+                        $executed[] = $action['id'] ?? $actionType;
+                        $fieldEffects[] = [
+                            'field_id' => $fieldId,
+                            'action' => 'set_field_type',
+                            'value' => $newType,
+                        ];
+                    }
+                    break;
+
+                case 'set_options':
+                    if ($fieldId) {
+                        $options = $action['options'] ?? $action['value'] ?? [];
+                        $finalFieldStates[$fieldId] = array_merge(
+                            $finalFieldStates[$fieldId] ?? ['is_visible' => true, 'is_required' => false, 'is_readonly' => false],
+                            ['options' => $options]
+                        );
+                        $executed[] = $action['id'] ?? $actionType;
+                        $fieldEffects[] = [
+                            'field_id' => $fieldId,
+                            'action' => 'set_options',
+                            'value' => $options,
+                        ];
+                    }
+                    break;
+
+                case 'append_options':
+                    if ($fieldId) {
+                        $newOptions = $action['options'] ?? $action['value'] ?? [];
+                        $executed[] = $action['id'] ?? $actionType;
+                        $fieldEffects[] = [
+                            'field_id' => $fieldId,
+                            'action' => 'append_options',
+                            'value' => $newOptions,
+                        ];
+                    }
+                    break;
+
+                case 'remove_options':
+                    if ($fieldId) {
+                        $removeOptions = $action['options'] ?? $action['value'] ?? [];
+                        $executed[] = $action['id'] ?? $actionType;
+                        $fieldEffects[] = [
+                            'field_id' => $fieldId,
+                            'action' => 'remove_options',
+                            'value' => $removeOptions,
+                        ];
+                    }
+                    break;
+
+                case 'enable':
+                    if ($fieldId) {
+                        $finalFieldStates[$fieldId] = array_merge(
+                            $finalFieldStates[$fieldId] ?? ['is_visible' => true, 'is_required' => false, 'is_readonly' => false],
+                            ['is_visible' => true]
+                        );
+                        $executed[] = $action['id'] ?? $actionType;
+                        $fieldEffects[] = [
+                            'field_id' => $fieldId,
+                            'action' => 'enable',
+                            'value' => true,
+                        ];
+                    }
+                    break;
+
+                case 'disable':
+                    if ($fieldId) {
+                        $finalFieldStates[$fieldId] = array_merge(
+                            $finalFieldStates[$fieldId] ?? ['is_visible' => true, 'is_required' => false, 'is_readonly' => false],
+                            ['is_visible' => false]
+                        );
+                        $executed[] = $action['id'] ?? $actionType;
+                        $fieldEffects[] = [
+                            'field_id' => $fieldId,
+                            'action' => 'disable',
+                            'value' => false,
                         ];
                     }
                     break;
@@ -912,9 +1142,94 @@ class EnterpriseRuleEngine
                     $executed[] = $action['id'] ?? $actionType;
                     break;
 
-                case 'stop':
-                    $stop = true;
+                case 'generate_reference':
+                    if ($fieldId && !empty($context['execution_id'])) {
+                        $execution = \App\Models\WorkflowExecution::find($context['execution_id']);
+                        $register = $execution?->register;
+                        if ($register) {
+                            $reference = $register->generateReceiptNumber();
+                            $finalValues[$fieldId] = $reference;
+                            // Store for later reuse by receipt generation (avoids double-consuming sequence)
+                            $finalValues['__generated_reference__'] = $reference;
+                            $executed[] = $action['id'] ?? $actionType;
+                            $fieldEffects[] = [
+                                'field_id' => $fieldId,
+                                'action' => 'generate_reference',
+                                'value' => $reference,
+                            ];
+                        }
+                    }
+                    break;
+
+                case 'pause_execution':
+                    if (!empty($context['execution_id'])) {
+                        $executed[] = $action['id'] ?? $actionType;
+                        $statusChange = 'paused';
+                    }
+                    break;
+
+                case 'resume_execution':
+                    if (!empty($context['execution_id'])) {
+                        $executed[] = $action['id'] ?? $actionType;
+                        $statusChange = 'in_progress';
+                    }
+                    break;
+
+                case 'execute_validation':
+                    $validationRuleId = $action['validation_rule_id'] ?? null;
+                    if (!$validationRuleId || empty($context['validation_rules'])) {
+                        break;
+                    }
+
+                    $rule = null;
+                    foreach ($context['validation_rules'] as $vr) {
+                        if ($vr->id === $validationRuleId) {
+                            $rule = $vr;
+                            break;
+                        }
+                    }
+
+                    if (!$rule) {
+                        \Illuminate\Support\Facades\Log::error('execute_validation: rule not in context', [
+                            'validation_rule_id' => $validationRuleId,
+                            'execution_id'       => $context['execution_id'] ?? null,
+                            'hint'               => 'Rule may have rule_config = null (legacy only).',
+                        ]);
+                        if (app()->isLocal()) {
+                            throw new \LogicException(
+                                "execute_validation: rule [{$validationRuleId}] not found. " .
+                                'Ensure rule_config is not null.'
+                            );
+                        }
+                        break;
+                    }
+
+                    $validationEngine = app(\App\Services\ValidationEngine::class);
+                    $result = $validationEngine->runValidation($rule, $finalValues, $context);
+
+                    $fieldEffects[] = [
+                        'field_id' => $fieldId,
+                        'action' => 'execute_validation',
+                        'validation_rule_id' => $validationRuleId,
+                        'result' => $result['status'] === 'passed' ? 'passed' : 'failed',
+                        'response_type' => $rule->response_type,
+                        'message_ar' => $rule->error_message_ar,
+                        'message_en' => $rule->error_message_en,
+                    ];
                     $executed[] = $action['id'] ?? $actionType;
+                    break;
+
+                default:
+                    if ($actionType) {
+                        \Illuminate\Support\Facades\Log::warning('EnterpriseRuleEngine: unimplemented action type', [
+                            'action_type'  => $actionType,
+                            'execution_id' => $context['execution_id'] ?? null,
+                            'rule_id'      => $context['rule_id'] ?? null,
+                        ]);
+                        throw new \App\Exceptions\Workflow\UnimplementedActionException(
+                            "Action type '{$actionType}' is not implemented"
+                        );
+                    }
                     break;
             }
         }
@@ -925,24 +1240,27 @@ class EnterpriseRuleEngine
             'routing' => $routing,
             'field_effects' => $fieldEffects,
             'stop' => $stop,
+            'status_change' => $statusChange,
+            'financial_trace' => $financialTrace,
         ];
     }
 
     /**
-     * Calculate a simple expression.
+     * Calculate a simple expression using BC Math exclusively.
+     * Uses FeeEngine which guarantees no float arithmetic.
      */
-    protected function calculateExpression(string $expression, array $values): float
+    protected function calculateExpression(string $expression, array $values): string
     {
-        // Replace field placeholders with values
-        $evaluated = preg_replace_callback('/\{\{([\w-]+)\}\}/', function ($matches) use ($values) {
-            return (float) ($values[$matches[1]] ?? 0);
-        }, $expression);
+        $feeEngine = app(FeeEngine::class);
 
-        // Safe evaluation
         try {
-            return eval("return (float)($evaluated);");
-        } catch (\Throwable $e) {
-            return 0;
+            return $feeEngine->calculate($expression, $values);
+        } catch (\Exception $e) {
+            \Illuminate\Support\Facades\Log::warning('EnterpriseRuleEngine: formula evaluation failed', [
+                'expression' => $expression,
+                'error' => $e->getMessage(),
+            ]);
+            throw $e;
         }
     }
 
@@ -976,6 +1294,35 @@ class EnterpriseRuleEngine
             }
         }
         return $count;
+    }
+
+    /**
+     * Convert any value to a BC-safe decimal string.
+     * Never uses float arithmetic.
+     */
+    protected function toDecimalString(mixed $value): string
+    {
+        if (is_string($value)) {
+            $value = trim($value);
+            if (is_numeric($value)) {
+                if (str_contains($value, '.')) {
+                    return $value;
+                }
+                return $value . '.0';
+            }
+            return '0.0';
+        }
+        if (is_int($value)) {
+            return (string) $value . '.0';
+        }
+        if (is_float($value)) {
+            $str = rtrim(rtrim(number_format($value, 10, '.', ''), '0'), '.');
+            if (!str_contains($str, '.')) {
+                $str .= '.0';
+            }
+            return $str;
+        }
+        return '0.0';
     }
 
     /**

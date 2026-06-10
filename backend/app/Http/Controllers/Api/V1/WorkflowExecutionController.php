@@ -76,7 +76,7 @@ class WorkflowExecutionController extends ApiController
         $execution = WorkflowExecution::with('version.steps', 'version.fields.registerField')
             ->findOrFail($id);
 
-        if (!$execution->isInProgress()) {
+        if (!$execution->isInProgress() && !$execution->isPaused()) {
             return $this->error('هذا التنفيذ ليس نشطاً', 422);
         }
 
@@ -84,35 +84,6 @@ class WorkflowExecutionController extends ApiController
             'step_index' => 'required|integer|min:0',
             'values' => 'required|array',
         ]);
-
-        // Run legacy validation engine (handles rules without rule_config)
-        $legacyResult = $this->validationEngine->validate(
-            $execution->version->id,
-            $data['values'],
-            ['execution_id' => $execution->id, 'step_index' => $data['step_index']]
-        );
-
-        // Check for blocking errors from legacy engine
-        $legacyErrors = array_filter($legacyResult['results'], function ($r) {
-            return $r['status'] === 'failed' && ($r['response_type'] ?? '') === 'error';
-        });
-
-        if (!empty($legacyErrors)) {
-            $allErrors = [];
-            foreach ($legacyErrors as $r) {
-                $allErrors[] = ['rule_id' => $r['rule_id'], 'message' => $r['error_message_ar'] ?? $r['error_message_en'] ?? 'خطأ في التحقق'];
-            }
-            return $this->success([
-                'validation_blocked' => true,
-                'errors' => $allErrors,
-                'execution' => $execution,
-            ], 'تم منع الحفظ بسبب أخطاء التحقق', [], 422);
-        }
-
-        // Check for routing decisions from legacy engine
-        $legacyRouting = array_filter($legacyResult['results'], function ($r) {
-            return ($r['status'] ?? '') === 'found' && ($r['decision'] ?? '') !== 'continue_workflow';
-        });
 
         $result = $this->executionService->submitStep(
             $execution,
@@ -132,13 +103,17 @@ class WorkflowExecutionController extends ApiController
             'is_review' => $isLastStep,
             'calculated_items' => $result['calculated_items'],
             'total_amount' => $result['total_amount'],
+            'grand_total' => $result['total_amount'],
+            'financial_trace' => $result['financial_trace'] ?? [],
+            'discount_applied' => $result['discount_applied'] ?? '0.000',
+            'snapshot_hash' => $result['snapshot_hash'] ?? null,
             'modified_values' => $result['modified_values'],
             'field_states' => $result['field_states'],
             'insurance_snapshots' => $result['insurance_snapshots'] ?? [],
             'computed_values' => $result['computed_values'] ?? [],
             'audit_summary' => $result['audit_summary'] ?? [],
-            'validation_warnings' => $legacyResult['has_warning'] ? array_values(array_filter($legacyResult['results'], fn($r) => $r['status'] === 'failed' && ($r['response_type'] ?? '') === 'warning')) : [],
-            'routing_decisions' => !empty($result['enterprise_routing'] ?? []) ? $result['enterprise_routing'] : (!empty($legacyRouting) ? array_values($legacyRouting) : []),
+            'validation_warnings' => $result['legacy_warnings'] ?? [],
+            'routing_decisions' => !empty($result['enterprise_routing'] ?? []) ? $result['enterprise_routing'] : (!empty($result['legacy_routing'] ?? []) ? array_values($result['legacy_routing']) : []),
             'enterprise_stats' => $result['enterprise_stats'] ?? null,
             'enterprise_results' => $result['enterprise_results'] ?? [],
             'version_info' => [
@@ -199,39 +174,43 @@ class WorkflowExecutionController extends ApiController
 
     public function complete(Request $request, string $id): JsonResponse
     {
-        $execution = WorkflowExecution::findOrFail($id);
+        return DB::transaction(function () use ($request, $id) {
+            $execution = WorkflowExecution::lockForUpdate()->findOrFail($id);
 
-        if (!$execution->isInProgress()) {
-            return $this->error('هذا التنفيذ ليس نشطاً', 422);
-        }
+            if (!$execution->isInProgress()) {
+                return $this->error('هذا التنفيذ ليس نشطاً', 422);
+            }
 
-        $data = $request->validate([
-            'notes' => 'nullable|string',
-        ]);
+            $data = $request->validate([
+                'notes' => 'nullable|string',
+            ]);
 
-        $receipt = $this->executionService->complete($execution, $data['notes'] ?? null);
+            $receipt = $this->executionService->complete($execution, $data['notes'] ?? null);
 
-        return $this->success([
-            'execution' => $execution->fresh(),
-            'receipt' => $receipt,
-        ], 'تم إنشاء الوصل بنجاح');
+            return $this->success([
+                'execution' => $execution->fresh(),
+                'receipt' => $receipt,
+            ], 'تم إنشاء الوصل بنجاح');
+        });
     }
 
     public function cancel(Request $request, string $id): JsonResponse
     {
-        $execution = WorkflowExecution::findOrFail($id);
+        return DB::transaction(function () use ($request, $id) {
+            $execution = WorkflowExecution::lockForUpdate()->findOrFail($id);
 
-        if (!$execution->isInProgress()) {
-            return $this->error('هذا التنفيذ ليس نشطاً', 422);
-        }
+            if (!$execution->isInProgress()) {
+                return $this->error('هذا التنفيذ ليس نشطاً', 422);
+            }
 
-        $data = $request->validate([
-            'reason' => 'required|string',
-        ]);
+            $data = $request->validate([
+                'reason' => 'required|string',
+            ]);
 
-        $execution = $this->executionService->cancel($execution, $data['reason']);
+            $execution = $this->executionService->cancel($execution, $data['reason']);
 
-        return $this->success($execution->fresh(), 'تم إلغاء التنفيذ');
+            return $this->success($execution->fresh(), 'تم إلغاء التنفيذ');
+        });
     }
 
     public function index(Request $request): JsonResponse

@@ -101,6 +101,7 @@ class FeeVersionController extends ApiController
 
     /**
      * List all active official fees with their codes for selection in workflows.
+     * Uses FeeEngine::resolveActive to guarantee the same amount the execution engine will charge.
      */
     public function listActive(): JsonResponse
     {
@@ -108,6 +109,21 @@ class FeeVersionController extends ApiController
             ->whereNotNull('fee_code')
             ->orderBy('name_ar')
             ->get(['id', 'fee_code', 'name_ar', 'name_en', 'amount']);
+
+        $feeEngine = app(FeeEngine::class);
+
+        $fees->each(function ($fee) use ($feeEngine) {
+            $feeVersion = $feeEngine->resolveActive($fee->fee_code);
+            if ($feeVersion) {
+                $fee->resolved_amount = $feeVersion->amount;
+                $fee->resolved_version = $feeVersion->version;
+                $fee->resolved_version_id = $feeVersion->id;
+            } else {
+                $fee->resolved_amount = $fee->amount;
+                $fee->resolved_version = null;
+                $fee->resolved_version_id = null;
+            }
+        });
 
         return $this->success($fees);
     }

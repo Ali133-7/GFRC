@@ -30,6 +30,7 @@ class WorkflowExecutionService
     protected InsuranceEngine $insuranceEngine;
     protected WorkflowFieldSchemaBuilder $schemaBuilder;
     protected ConditionalValidationEngine $validationEngine;
+    protected \App\Services\ValidationEngine $legacyValidationEngine;
     protected ComputedFieldEngine $computedEngine;
     protected FieldAuditTrail $auditTrail;
     protected CrossFieldValidationEngine $crossFieldValidation;
@@ -43,6 +44,7 @@ class WorkflowExecutionService
         InsuranceEngine $insuranceEngine,
         WorkflowFieldSchemaBuilder $schemaBuilder,
         ConditionalValidationEngine $validationEngine,
+        \App\Services\ValidationEngine $legacyValidationEngine,
         ComputedFieldEngine $computedEngine,
         FieldAuditTrail $auditTrail,
         CrossFieldValidationEngine $crossFieldValidation
@@ -56,6 +58,7 @@ class WorkflowExecutionService
         $this->insuranceEngine = $insuranceEngine;
         $this->schemaBuilder = $schemaBuilder;
         $this->validationEngine = $validationEngine;
+        $this->legacyValidationEngine = $legacyValidationEngine;
         $this->computedEngine = $computedEngine;
         $this->auditTrail = $auditTrail;
         $this->crossFieldValidation = $crossFieldValidation;
@@ -113,7 +116,7 @@ class WorkflowExecutionService
      */
     public function submitStep(WorkflowExecution $execution, int $stepIndex, array $values): array
     {
-        if (!$execution->isInProgress()) {
+        if (!$execution->isInProgress() && !$execution->isPaused()) {
             throw new \RuntimeException('هذا التنفيذ ليس نشطاً');
         }
 
@@ -130,8 +133,13 @@ class WorkflowExecutionService
             $sanitizedValues = $this->sanitizeInput($stepFields, $values, $currentValues);
             $mergedValues = array_merge($currentValues, $sanitizedValues);
 
-            $validationErrors = $this->validationEngine->validateAll($stepFields, $mergedValues);
-            $crossFieldErrors = $this->crossFieldValidation->validateAll($stepFields, $mergedValues);
+            // Normalize field keys so rule engines can look up by UUID (condition field_id)
+            // or canonical key (register_field_id / custom_<id>) interchangeably.
+            // This is used ONLY for engine consumption; $mergedValues stays canonical-only.
+            $normalizedValues = $this->normalizeFieldKeys($mergedValues, $fields);
+
+            $validationErrors = $this->validationEngine->validateAll($stepFields, $normalizedValues);
+            $crossFieldErrors = $this->crossFieldValidation->validateAll($stepFields, $normalizedValues);
             $allErrors = array_merge($validationErrors, $crossFieldErrors);
 
             if (!empty($allErrors)) {
@@ -142,48 +150,152 @@ class WorkflowExecutionService
                 ], JSON_UNESCAPED_UNICODE));
             }
 
-            $computedValues = $this->computedEngine->recalculateAll($stepFields, $mergedValues);
-            $mergedValues = array_merge($mergedValues, $computedValues);
+            $computedValues = $this->computedEngine->recalculateAll($stepFields, $normalizedValues);
+            $normalizedValues = array_merge($normalizedValues, $computedValues);
 
-            // Apply rules (legacy)
-            $ruleResult = $this->ruleEngine->evaluate(
-                $rules->toArray(),
-                $mergedValues,
-                ['step_index' => $stepIndex, 'execution_id' => $execution->id]
+            // 1. Run legacy validation engine (rules without rule_config)
+            $legacyResult = $this->legacyValidationEngine->validate(
+                $version->id,
+                $normalizedValues,
+                ['execution_id' => $execution->id, 'step_index' => $stepIndex, 'acting_user' => auth()->user()]
             );
 
-            // Run enterprise rules and merge actions
+            // Extract legacy validation blocks, warnings, and routing decisions
+            $legacyBlocks = [];
+            $legacyWarnings = [];
+            $legacyRouting = [];
+            foreach ($legacyResult['results'] ?? [] as $r) {
+                if ($r['status'] === 'failed' && ($r['response_type'] ?? '') === 'error') {
+                    $legacyBlocks[] = [
+                        'rule_id' => $r['rule_id'],
+                        'action' => 'legacy_validation',
+                        'validation_type' => $r['validation_type'],
+                        'result' => 'failed',
+                        'response_type' => 'error',
+                        'message_ar' => $r['message'] ?? '',
+                        'message_en' => $r['message'] ?? '',
+                    ];
+                }
+                if ($r['status'] === 'failed' && ($r['response_type'] ?? '') === 'warning') {
+                    $legacyWarnings[] = $r;
+                }
+                if (($r['status'] ?? '') === 'found' && ($r['decision'] ?? '') !== 'continue_workflow') {
+                    $legacyRouting[] = $r;
+                }
+            }
+
+            // Load validation rules for dynamic execute_validation actions
+            // Only enterprise rules (rule_config IS NOT NULL) to prevent legacy double-execution.
+            $validationRules = \App\Models\ValidationRule::where('workflow_version_id', $version->id)
+                ->where('is_active', true)
+                ->whereNotNull('rule_config')
+                ->get();
+
+            // 2. Unified rule evaluation — EnterpriseRuleEngine handles ALL rule types:
+            // - Enterprise rules (validation_rules with rule_config)
+            // - Simple rules (workflow_rules)
+            // - Case-based rules (workflow_rules)
             $enterpriseResult = $this->enterpriseEngine->execute(
                 $version->id,
-                $mergedValues,
-                ['step_index' => $stepIndex, 'execution_id' => $execution->id]
+                $normalizedValues,
+                [
+                    'step_index' => $stepIndex,
+                    'execution_id' => $execution->id,
+                    'validation_rules' => $validationRules,
+                ]
             );
-            $enterpriseActions = [];
+
+            // Detect pause/resume status changes from rule results
+            $statusChange = null;
+            foreach ($enterpriseResult['results'] ?? [] as $r) {
+                if ($r['matched'] && !empty($r['status_change'])) {
+                    $statusChange = $r['status_change'];
+                }
+            }
+
+            // If execution is paused and no resume action triggered, reject
+            if ($execution->isPaused() && $statusChange !== 'in_progress') {
+                throw new \App\Exceptions\Workflow\ExecutionPausedException();
+            }
+
+            // 3. Check for execute_validation blocks (error only — warnings flow through)
+            $enterpriseBlocks = [];
             foreach ($enterpriseResult['results'] ?? [] as $r) {
                 if ($r['matched'] && !empty($r['field_effects'])) {
-                    // Transform enterprise field_effects to legacy action format
                     foreach ($r['field_effects'] as $effect) {
+                        if ($effect['action'] === 'execute_validation'
+                            && ($effect['result'] ?? '') === 'failed'
+                            && ($effect['response_type'] ?? '') === 'error') {
+                            $enterpriseBlocks[] = $effect;
+                        }
+                    }
+                }
+            }
+
+            // 4. Merge ALL blocks and block if any exist
+            $allBlocks = array_merge($legacyBlocks, $enterpriseBlocks);
+            if (!empty($allBlocks)) {
+                throw new \App\Exceptions\Workflow\ValidationBlockedException($allBlocks);
+            }
+
+            // Build a quick lookup so engine effects (authored with UUID field_ids)
+            // are applied to the canonical key we persist in the snapshot.
+            $fieldIdToCanonical = [];
+            foreach ($fields as $field) {
+                $canonical = $field->register_field_id ?? 'custom_'.$field->id;
+                $fieldIdToCanonical[$field->id] = $canonical;
+                $fieldIdToCanonical[$canonical] = $canonical;
+                $fieldIdToCanonical['custom_'.$field->id] = $canonical;
+                if (!empty($field->register_field_id)) {
+                    $fieldIdToCanonical[$field->register_field_id] = $canonical;
+                }
+            }
+
+            // Transform enterprise field_effects to legacy action format for downstream consumers
+            $allActions = [];
+            foreach ($enterpriseResult['results'] ?? [] as $r) {
+                if ($r['matched'] && !empty($r['field_effects'])) {
+                    foreach ($r['field_effects'] as $effect) {
+                        $canonicalFieldId = $fieldIdToCanonical[$effect['field_id'] ?? ''] ?? ($effect['field_id'] ?? '');
                         $action = [
-                            'target_field_id' => $effect['field_id'],
+                            'target_field_id' => $canonicalFieldId,
                             'action' => $effect['action'] ?? 'set_value',
                         ];
                         if ($effect['action'] === 'set_fee') {
                             $action['fee_code'] = $effect['fee_code'] ?? null;
                             $action['resolved_amount'] = $effect['amount'] ?? null;
-                        } elseif (isset($effect['value'])) {
+                            $action['fee_version_id'] = $effect['fee_version_id'] ?? null;
+                            \Log::debug('set_fee action transformed', ['effect' => $effect, 'canonicalFieldId' => $canonicalFieldId, 'action' => $action]);
+                        } elseif ($effect['action'] === 'calculate') {
+                            $action['resolved_amount'] = $effect['result'] ?? null;
+                        } elseif ($effect['action'] === 'apply_discount') {
+                            $action['resolved_amount'] = $effect['value'] ?? null;
+                        } elseif ($effect['action'] === 'clear_value') {
+                            $action['resolved_value'] = null;
+                        } elseif ($effect['action'] === 'copy_value') {
+                            $action['resolved_value'] = $effect['value'] ?? null;
+                        } elseif (array_key_exists('value', $effect)) {
                             $action['resolved_value'] = $effect['value'];
                         }
-                        $enterpriseActions[] = $action;
+                        $allActions[] = $action;
                     }
                 }
             }
 
-            $allActions = array_merge($ruleResult['actions'] ?? [], $enterpriseActions);
-
             $modifiedValues = $this->applySetValueActions($mergedValues, $allActions);
+
+            // Preserve generate_reference in snapshot for reuse
+            foreach ($enterpriseResult['results'] ?? [] as $r) {
+                if ($r['matched'] && !empty($r['field_effects'])) {
+                    foreach ($r['field_effects'] as $effect) {
+                        if ($effect['action'] === 'generate_reference' && isset($effect['value'])) {
+                            $modifiedValues['__generated_reference__'] = $effect['value'];
+                        }
+                    }
+                }
+            }
             $fieldStates = $this->buildFieldStates($fields, $allActions);
             $fieldStates = $this->visibilityResolver->applyFieldControlActions($fieldStates, $allActions);
-
             $stepId = $steps[$stepIndex]->id ?? null;
             $schema = $this->schemaBuilder->buildForVersion($stepFields, $modifiedValues);
             $visibleSchema = $this->schemaBuilder->filterVisible($schema);
@@ -201,10 +313,29 @@ class WorkflowExecutionService
             );
 
             // Calculate fees
-            $calculatedItems = $this->calculateItems($visibleFields, $modifiedValues, $allActions);
+            $calculatedItems = $this->calculateItems($visibleFields, $modifiedValues, $allActions, $fields);
             $stepTotal = $this->sumItems($calculatedItems);
 
-            $financialTrace = $this->buildFinancialTrace($visibleFields, $modifiedValues, $calculatedItems, $allActions);
+            // Build detailed financial trace from the rule engine (step-by-step transformations)
+            $financialTrace = $enterpriseResult['financial_trace'] ?? [];
+
+            // Compute total discount applied in this step
+            $discountApplied = '0';
+            foreach ($financialTrace as $t) {
+                if ($t['step'] === 'discount') {
+                    $discountApplied = bcadd($discountApplied, (string) ($t['discount_amount'] ?? '0'), $this->ctx->scale());
+                }
+            }
+            $discountApplied = $this->normalizeDecimal($discountApplied);
+
+            // Compute snapshot hash for integrity verification
+            $snapshotHash = hash('sha256', $this->canonicalJson([
+                'calculated_items' => $calculatedItems,
+                'financial_trace' => $financialTrace,
+                'step_total' => $stepTotal,
+                'execution_id' => $execution->id,
+                'step_index' => $stepIndex,
+            ]));
 
             // Insurance snapshots
             $insuranceSnapshots = $this->insuranceEngine->collectInsuranceSnapshots($visibleFields, $modifiedValues);
@@ -227,10 +358,13 @@ class WorkflowExecutionService
                     'next_step_index' => $nextStepIndex,
                     'values' => $modifiedValues,
                     'step_total' => $stepTotal,
-                    'matched_rules' => $ruleResult['matched_rules'],
+                    'matched_rules' => $enterpriseResult['matched_rules'] ?? 0,
                     'insurance_snapshots' => $insuranceSnapshots,
                     'field_changes' => $fieldChanges,
                     'computed_values' => $computedValues,
+                    'financial_trace' => $financialTrace,
+                    'discount_applied' => $discountApplied,
+                    'snapshot_hash' => $snapshotHash,
                 ],
                 calculatedItems: $calculatedItems,
                 feeSnapshot: $feeSnapshot,
@@ -240,16 +374,33 @@ class WorkflowExecutionService
             );
 
             // Update denormalized cache (not source of truth)
-            $execution->where('id', $execution->id)
+            // CRITICAL: Deduplicate items by field_id to prevent double-counting
+            $mergedItems = array_merge($execution->calculated_items ?? [], $calculatedItems);
+            $uniqueItems = $this->deduplicateItemsByFieldId($mergedItems);
+            
+            $updateData = [
+                'current_step_index' => $nextStepIndex,
+                'values_snapshot' => $modifiedValues,
+                'calculated_items' => $uniqueItems,
+                'financial_trace' => array_merge($execution->financial_trace ?? [], $financialTrace),
+                'total_amount' => $newTotal,
+                'lock_version' => $execution->lock_version + 1,
+            ];
+            if ($statusChange) {
+                $updateData['status'] = $statusChange;
+            }
+
+            $affected = $execution->where('id', $execution->id)
                 ->where('lock_version', $execution->lock_version)
-                ->where('status', 'in_progress')
-                ->update([
-                    'current_step_index' => $nextStepIndex,
-                    'values_snapshot' => $modifiedValues,
-                    'calculated_items' => array_merge($execution->calculated_items ?? [], $calculatedItems),
-                    'total_amount' => $newTotal,
-                    'lock_version' => $execution->lock_version + 1,
-                ]);
+                ->where('status', $execution->status)
+                ->update($updateData);
+
+            if ($affected === 0) {
+                throw new \App\Exceptions\Workflow\ExecutionNotInProgressException(
+                    'Execution was modified by another request. Please refresh and try again.',
+                    409
+                );
+            }
 
             $fresh = $execution->fresh();
 
@@ -257,13 +408,19 @@ class WorkflowExecutionService
                 'execution' => $fresh,
                 'modified_values' => $modifiedValues,
                 'field_states' => $fieldStates,
-                'calculated_items' => array_merge($execution->calculated_items ?? [], $calculatedItems),
+                'calculated_items' => $uniqueItems,
                 'total_amount' => $newTotal,
                 'insurance_snapshots' => $insuranceSnapshots,
                 'computed_values' => $computedValues,
                 'field_changes' => $fieldChanges,
                 'audit_summary' => $this->auditTrail->getSummary(),
-                'financial_calculation_trace' => $financialTrace,
+                'financial_trace' => $financialTrace,
+                'discount_applied' => $discountApplied,
+                'snapshot_hash' => $snapshotHash,
+                // TODO: legacy_warnings و legacy_routing مؤقتان
+                // دمجهما في execution_result موحَّد عند Phase 7 refactor
+                'legacy_warnings' => $legacyWarnings,
+                'legacy_routing' => $legacyRouting,
                 'enterprise_routing' => $enterpriseResult['routing_decisions'] ?? [],
                 'enterprise_stats' => [
                     'total_rules_evaluated' => $enterpriseResult['total_rules_evaluated'] ?? 0,
@@ -295,17 +452,62 @@ class WorkflowExecutionService
     public function preview(WorkflowVersion $version, array $values): array
     {
         $fields = $version->fields;
-        $rules = $version->rules;
 
-        $ruleResult = $this->ruleEngine->evaluate(
-            $rules->toArray(),
-            $values,
+        // Normalize field keys so rule engines can look up by UUID or canonical key
+        $normalizedValues = $this->normalizeFieldKeys($values, $fields);
+
+        // Unified rule evaluation
+        $ruleResult = $this->enterpriseEngine->execute(
+            $version->id,
+            $normalizedValues,
             ['preview' => true]
         );
 
-        $fieldStates = $this->buildFieldStates($fields, $ruleResult['actions']);
-        $fieldStates = $this->visibilityResolver->applyFieldControlActions($fieldStates, $ruleResult['actions']);
-        $modifiedValues = $this->applySetValueActions($values, $ruleResult['actions']);
+        // Build canonical lookup for engine effects
+        $fieldIdToCanonical = [];
+        foreach ($fields as $field) {
+            $canonical = $field->register_field_id ?? 'custom_'.$field->id;
+            $fieldIdToCanonical[$field->id] = $canonical;
+            $fieldIdToCanonical[$canonical] = $canonical;
+            $fieldIdToCanonical['custom_'.$field->id] = $canonical;
+            if (!empty($field->register_field_id)) {
+                $fieldIdToCanonical[$field->register_field_id] = $canonical;
+            }
+        }
+
+        // Transform enterprise field_effects to legacy action format
+        $allActions = [];
+        foreach ($ruleResult['results'] ?? [] as $r) {
+            if ($r['matched'] && !empty($r['field_effects'])) {
+                foreach ($r['field_effects'] as $effect) {
+                    $canonicalFieldId = $fieldIdToCanonical[$effect['field_id'] ?? ''] ?? ($effect['field_id'] ?? '');
+                    $action = [
+                        'target_field_id' => $canonicalFieldId,
+                        'action' => $effect['action'] ?? 'set_value',
+                    ];
+                    if ($effect['action'] === 'set_fee') {
+                        $action['fee_code'] = $effect['fee_code'] ?? null;
+                        $action['resolved_amount'] = $effect['amount'] ?? null;
+                        $action['fee_version_id'] = $effect['fee_version_id'] ?? null;
+                    } elseif ($effect['action'] === 'calculate') {
+                        $action['resolved_amount'] = $effect['result'] ?? null;
+                    } elseif ($effect['action'] === 'apply_discount') {
+                        $action['resolved_amount'] = $effect['value'] ?? null;
+                    } elseif ($effect['action'] === 'clear_value') {
+                        $action['resolved_value'] = null;
+                    } elseif ($effect['action'] === 'copy_value') {
+                        $action['resolved_value'] = $effect['value'] ?? null;
+                    } elseif (array_key_exists('value', $effect)) {
+                        $action['resolved_value'] = $effect['value'];
+                    }
+                    $allActions[] = $action;
+                }
+            }
+        }
+
+        $fieldStates = $this->buildFieldStates($fields, $allActions);
+        $fieldStates = $this->visibilityResolver->applyFieldControlActions($fieldStates, $allActions);
+        $modifiedValues = $this->applySetValueActions($normalizedValues, $allActions);
 
         $schema = $this->schemaBuilder->buildForVersion($fields, $modifiedValues);
         $visibleSchema = $this->schemaBuilder->filterVisible($schema);
@@ -313,23 +515,40 @@ class WorkflowExecutionService
         $visibleFieldIds = array_column($visibleSchema, 'field_id');
         $visibleFields = $fields->filter(fn($f) => in_array($f->register_field_id ?? 'custom_'.$f->id, $visibleFieldIds, true));
 
-        $calculatedItems = $this->calculateItems($visibleFields, $modifiedValues, $ruleResult['actions']);
+        $calculatedItems = $this->calculateItems($visibleFields, $modifiedValues, $allActions, $fields);
         $totalAmount = $this->sumItems($calculatedItems);
 
         $insuranceSnapshots = $this->insuranceEngine->collectInsuranceSnapshots($visibleFields, $modifiedValues);
-        $financialTrace = $this->buildFinancialTrace($visibleFields, $modifiedValues, $calculatedItems, $ruleResult['actions']);
+        $financialTrace = $ruleResult['financial_trace'] ?? [];
+
+        $discountApplied = '0';
+        foreach ($financialTrace as $t) {
+            if ($t['step'] === 'discount') {
+                $discountApplied = bcadd($discountApplied, (string) ($t['discount_amount'] ?? '0'), $this->ctx->scale());
+            }
+        }
+        $discountApplied = $this->normalizeDecimal($discountApplied);
+
+        $snapshotHash = hash('sha256', $this->canonicalJson([
+            'calculated_items' => $calculatedItems,
+            'financial_trace' => $financialTrace,
+            'step_total' => $totalAmount,
+        ]));
 
         return [
             'items' => $calculatedItems,
             'total_amount' => $totalAmount,
-            'matched_rules' => $ruleResult['matched_rules'],
-            'actions' => $ruleResult['actions'],
+            'grand_total' => $totalAmount,
+            'matched_rules' => $ruleResult['matched_rules'] ?? 0,
+            'actions' => $allActions,
             'values' => $values,
             'modified_values' => $modifiedValues,
             'field_states' => $fieldStates,
             'insurance_snapshots' => $insuranceSnapshots,
             'schema' => $visibleSchema,
-            'financial_calculation_trace' => $financialTrace,
+            'financial_trace' => $financialTrace,
+            'discount_applied' => $discountApplied,
+            'snapshot_hash' => $snapshotHash,
         ];
     }
 
@@ -370,8 +589,8 @@ class WorkflowExecutionService
                 causedBy: $execution->started_by,
             );
 
-            // Update execution cache
-            $execution->where('id', $execution->id)
+            // Update execution cache with optimistic lock verification
+            $affected = $execution->where('id', $execution->id)
                 ->where('lock_version', $execution->lock_version)
                 ->where('status', 'in_progress')
                 ->update([
@@ -380,10 +599,18 @@ class WorkflowExecutionService
                     'lock_version' => $execution->lock_version + 1,
                 ]);
 
+            if ($affected === 0) {
+                throw new \App\Exceptions\Workflow\ExecutionNotInProgressException(
+                    'Execution was modified by another request. Please refresh and try again.',
+                    409
+                );
+            }
+
             $execution->refresh();
 
-            // Generate receipt number
-            $receiptNumber = $register->generateReceiptNumber();
+            // Generate receipt number (reuse if a reference was generated earlier by generate_reference action)
+            $preGenerated = $execution->values_snapshot['__generated_reference__'] ?? null;
+            $receiptNumber = $preGenerated ?? $register->generateReceiptNumber();
 
             // Create receipt
             $receipt = Receipt::create([
@@ -397,7 +624,7 @@ class WorkflowExecutionService
                 'version' => 1,
                 'lock_version' => 0,
                 'notes' => $notes,
-                'idempotency_key' => (string) \Illuminate\Support\Str::uuid(),
+                'idempotency_key' => 'exec_' . $execution->id . '_' . md5($execution->lock_version . json_encode($execution->calculated_items ?? [])),
             ]);
 
             // Create receipt items
@@ -491,7 +718,7 @@ class WorkflowExecutionService
                 causedBy: $execution->started_by,
             );
 
-            $execution->where('id', $execution->id)
+            $affected = $execution->where('id', $execution->id)
                 ->where('lock_version', $execution->lock_version)
                 ->where('status', 'in_progress')
                 ->update([
@@ -500,6 +727,13 @@ class WorkflowExecutionService
                     'cancel_reason' => $reason,
                     'lock_version' => $execution->lock_version + 1,
                 ]);
+
+            if ($affected === 0) {
+                throw new \App\Exceptions\Workflow\ExecutionNotInProgressException(
+                    'Execution was modified by another request. Please refresh and try again.',
+                    409
+                );
+            }
 
             return $execution->fresh();
         });
@@ -616,6 +850,50 @@ class WorkflowExecutionService
         return $sanitized;
     }
 
+    /**
+     * Normalize field keys so that every alias (UUID, register_field_id, custom_<id>)
+     * maps to the same canonical value. This ensures rule engines can look up values
+     * by whichever key format the condition/action was authored with.
+     */
+    protected function normalizeFieldKeys(array $values, $fields): array
+    {
+        $normalized = $values;
+
+        foreach ($fields as $field) {
+            $canonical = $field->register_field_id ?? 'custom_'.$field->id;
+            $aliases = [$field->id, 'custom_'.$field->id];
+            if (!empty($field->register_field_id)) {
+                $aliases[] = $field->register_field_id;
+            }
+
+            // Prefer canonical value (authoritative, set by sanitizeInput),
+            // then fall back to any alias.
+            $bestValue = null;
+            $bestFound = false;
+            if (array_key_exists($canonical, $values)) {
+                $bestValue = $values[$canonical];
+                $bestFound = true;
+            } else {
+                foreach ($aliases as $alias) {
+                    if (array_key_exists($alias, $values)) {
+                        $bestValue = $values[$alias];
+                        $bestFound = true;
+                        break;
+                    }
+                }
+            }
+
+            if ($bestFound) {
+                $normalized[$canonical] = $bestValue;
+                foreach ($aliases as $alias) {
+                    $normalized[$alias] = $bestValue;
+                }
+            }
+        }
+
+        return $normalized;
+    }
+
     protected function buildFieldStates($fields, array $actions): array
     {
         $states = [];
@@ -657,10 +935,19 @@ class WorkflowExecutionService
                     }
                     break;
                 case 'set_required':
-                    if (isset($states[$targetId])) $states[$targetId]['is_required'] = (bool) ($action['value'] ?? $action['resolved_value'] ?? true);
+                    if (isset($states[$targetId])) $states[$targetId]['is_required'] = !in_array($action['value'] ?? $action['resolved_value'] ?? true, ['false', false, '0', 0, 'optional'], true);
+                    break;
+                case 'set_optional':
+                    if (isset($states[$targetId])) $states[$targetId]['is_required'] = false;
                     break;
                 case 'set_readonly':
-                    if (isset($states[$targetId])) $states[$targetId]['is_readonly'] = (bool) ($action['value'] ?? $action['resolved_value'] ?? true);
+                    if (isset($states[$targetId])) $states[$targetId]['is_readonly'] = !in_array($action['value'] ?? $action['resolved_value'] ?? true, ['false', false, '0', 0, 'editable'], true);
+                    break;
+                case 'set_editable':
+                    if (isset($states[$targetId])) {
+                        $states[$targetId]['is_editable'] = !in_array($action['value'] ?? $action['resolved_value'] ?? true, ['false', false, '0', 0], true);
+                        $states[$targetId]['is_readonly'] = !$states[$targetId]['is_editable'];
+                    }
                     break;
                 case 'set_field_type':
                     if (isset($states[$targetId])) $states[$targetId]['field_type'] = $action['resolved_value'] ?? $action['value'] ?? 'text';
@@ -668,11 +955,42 @@ class WorkflowExecutionService
                 case 'set_options':
                     if (isset($states[$targetId])) $states[$targetId]['options'] = $action['resolved_value'] ?? $action['value'] ?? [];
                     break;
-                case 'set_lock':
-                    if (isset($states[$targetId])) $states[$targetId]['is_locked'] = (bool) ($action['value'] ?? $action['resolved_value'] ?? true);
+                case 'append_options':
+                    if (isset($states[$targetId])) {
+                        $existing = $states[$targetId]['options'] ?? [];
+                        $new = $action['resolved_value'] ?? $action['value'] ?? [];
+                        $states[$targetId]['options'] = array_values(array_merge($existing, $new));
+                    }
                     break;
-                case 'set_editable':
-                    if (isset($states[$targetId])) $states[$targetId]['is_editable'] = (bool) ($action['value'] ?? $action['resolved_value'] ?? true);
+                case 'remove_options':
+                    if (isset($states[$targetId])) {
+                        $existing = $states[$targetId]['options'] ?? [];
+                        $toRemove = $action['resolved_value'] ?? $action['value'] ?? [];
+                        $removeKeys = is_array($toRemove) ? array_column($toRemove, 'value') : (array) $toRemove;
+                        $states[$targetId]['options'] = array_values(array_filter($existing, fn($opt) => !in_array($opt['value'] ?? $opt, $removeKeys, true)));
+                    }
+                    break;
+                case 'enable':
+                    if (isset($states[$targetId])) $states[$targetId]['is_visible'] = true;
+                    break;
+                case 'disable':
+                    if (isset($states[$targetId])) $states[$targetId]['is_visible'] = false;
+                    break;
+                case 'set_lock':
+                    if (isset($states[$targetId])) {
+                        $states[$targetId]['is_locked'] = !in_array($action['value'] ?? $action['resolved_value'] ?? true, ['false', false, '0', 0, 'unlock'], true);
+                        if ($states[$targetId]['is_locked']) {
+                            $states[$targetId]['is_editable'] = false;
+                            $states[$targetId]['is_readonly'] = true;
+                        }
+                    }
+                    break;
+                case 'unlock':
+                    if (isset($states[$targetId])) {
+                        $states[$targetId]['is_locked'] = false;
+                        $states[$targetId]['is_editable'] = true;
+                        $states[$targetId]['is_readonly'] = false;
+                    }
                     break;
             }
         }
@@ -697,27 +1015,83 @@ class WorkflowExecutionService
                 $modified[$targetId] = $action['resolved_amount'] ?? '0';
             } elseif ($act === 'override_value' && $targetId) {
                 $modified[$targetId] = $action['resolved_value'] ?? $action['value'] ?? '';
+            } elseif ($act === 'clear_value' && $targetId) {
+                $modified[$targetId] = null;
+            } elseif ($act === 'copy_value' && $targetId) {
+                $modified[$targetId] = $action['resolved_value'] ?? $action['value'] ?? '';
+            } elseif ($act === 'generate_reference' && $targetId) {
+                $modified[$targetId] = $action['resolved_value'] ?? '';
             }
         }
         return $modified;
     }
 
-    protected function calculateItems($fields, array $values, array $actions): array
+    protected function calculateItems($fields, array $values, array $actions, $allFields = null): array
     {
         $items = [];
         $feeAmounts = [];
 
+        // Map every identifier a rule action might target → the field's canonical key.
+        // Rules may be authored against register_field_id, the workflow_field PK, or
+        // custom_<id>; calculateItems keys everything by the canonical
+        // (register_field_id ?? custom_<id>). Without this, an action targeting the
+        // workflow_field PK matched no field and its amount was silently dropped → zero total.
+        // TODO: Field key convention is normalized at consumption (calculateItems).
+        // Clean fix: normalize at rule-build time + migration. Phase 2 candidate.
+        // Build alias map from ALL fields in the version so cross-step actions
+        // (e.g. set_fee targeting a field in step 2 while evaluating step 1)
+        // resolve correctly instead of being treated as unmatched/orphaned.
+        $aliasToCanonical = [];
+        foreach (($allFields ?? $fields) as $field) {
+            $canonical = $field->register_field_id ?? 'custom_'.$field->id;
+            $aliasToCanonical[$canonical] = $canonical;
+            $aliasToCanonical[$field->id] = $canonical;
+            if (!empty($field->register_field_id)) {
+                $aliasToCanonical[$field->register_field_id] = $canonical;
+            }
+            $aliasToCanonical['custom_'.$field->id] = $canonical;
+        }
+
+        // Aliases known to the ENTIRE version — used to tell a truly orphaned target
+        // (unknown everywhere → hazard) from one that simply belongs to another step
+        // (deferred to that step's own calculation, not an error).
+        $knownAliases = [];
+        foreach (($allFields ?? $fields) as $field) {
+            $knownAliases[$field->register_field_id ?? 'custom_'.$field->id] = true;
+            $knownAliases[$field->id] = true;
+            if (!empty($field->register_field_id)) {
+                $knownAliases[$field->register_field_id] = true;
+            }
+            $knownAliases['custom_'.$field->id] = true;
+        }
+
         $actionsByField = [];
+        $unmatchedFinancial = [];
         foreach ($actions as $action) {
             $targetId = $action['target_field_id'] ?? null;
-            if ($targetId) {
-                $actionsByField[$targetId][] = $action;
+            if (!$targetId) {
+                continue;
             }
+            $canonical = $aliasToCanonical[$targetId] ?? null;
+            if ($canonical === null) {
+                // Not in the current step. Check if it belongs to another step in the version.
+                // If unknown to the entire version AND it's a positive financial action, fail closed.
+                if (!isset($knownAliases[$targetId]) && $this->isPositiveFinancialAction($action)) {
+                    $unmatchedFinancial[] = $action;
+                }
+                continue;
+            }
+            $actionsByField[$canonical][] = $action;
         }
+
+        if (!empty($unmatchedFinancial)) {
+            $this->failOnUnmatchedFinancialActions($unmatchedFinancial);
+        }
+
 
         foreach ($fields as $field) {
             if (!empty($field->fee_code)) {
-                $feeVersion = $this->feeEngine->resolve($field->fee_code);
+                $feeVersion = $this->feeEngine->resolveActive($field->fee_code);
                 $feeAmounts[$field->fee_code] = $feeVersion?->amount ?? '0';
 
                 $this->ctx->recordFeeSnapshot($field->fee_code, [
@@ -805,7 +1179,7 @@ class WorkflowExecutionService
                 $feeCode = !empty($field->fee_code) ? $field->fee_code : null;
                 $feeVersionId = null;
                 if (!empty($feeCode)) {
-                    $feeVersion = $this->feeEngine->resolve($feeCode);
+                    $feeVersion = $this->feeEngine->resolveActive($feeCode);
                     $feeVersionId = $feeVersion?->id;
                 }
 
@@ -825,7 +1199,117 @@ class WorkflowExecutionService
             }
         }
 
-        return $items;
+        // Process remaining financial actions that targeted fields not in the current
+        // step's visible fields list (cross-step or dynamic fields set by rules).
+        // Without this, rule-assigned fees/calculations on fields outside the current
+        // step vanish silently → zero total on review/receipt.
+        
+        // Track all field IDs that have been processed (from visible fields loop above)
+        $processedFieldIds = [];
+        foreach ($items as $item) {
+            $processedFieldIds[$item['field_id']] = true;
+        }
+
+        foreach ($actionsByField as $fieldId => $fieldActions) {
+            if (isset($processedFieldIds[$fieldId])) {
+                continue;
+            }
+
+            foreach ($fieldActions as $action) {
+                $act = $action['action'] ?? '';
+                if ($act === 'set_fee') {
+                    $feeAmount = (string) ($action['resolved_amount'] ?? '0');
+                    if (bccomp($feeAmount, '0', $this->ctx->scale()) > 0) {
+                        $items[] = [
+                            'field_id' => $fieldId,
+                            'field_name' => $fieldId,
+                            'label' => $fieldId,
+                            'amount' => $feeAmount,
+                            'text_value' => null,
+                            'fee_code' => $action['fee_code'] ?? null,
+                            'fee_version_id' => $action['fee_version_id'] ?? null,
+                            'action' => 'set_fee',
+                            'is_insured' => false,
+                            'insurance_value' => null,
+                        ];
+                        $processedFieldIds[$fieldId] = true;
+                    }
+                } elseif ($act === 'calculate') {
+                    $amount = (string) ($action['resolved_amount'] ?? '0');
+                    if (bccomp($amount, '0', $this->ctx->scale()) > 0) {
+                        $items[] = [
+                            'field_id' => $fieldId,
+                            'field_name' => $fieldId,
+                            'label' => $fieldId,
+                            'amount' => $amount,
+                            'text_value' => null,
+                            'fee_code' => null,
+                            'fee_version_id' => null,
+                            'action' => 'calculate',
+                            'is_insured' => false,
+                            'insurance_value' => null,
+                        ];
+                        $processedFieldIds[$fieldId] = true;
+                    }
+                } elseif ($act === 'set_value') {
+                    // Handle set_value actions on financial fields outside current step
+                    $value = (string) ($action['resolved_value'] ?? '');
+                    if (is_numeric($value) && bccomp($value, '0', $this->ctx->scale()) > 0) {
+                        // Find the field definition to check if it's financial
+                        $fieldDef = null;
+                        foreach (($allFields ?? []) as $f) {
+                            $fId = $f->register_field_id ?? 'custom_'.$f->id;
+                            if ($fId === $fieldId || $f->id === $fieldId) {
+                                $fieldDef = $f;
+                                break;
+                            }
+                        }
+                        // Include if field is financial or has a positive numeric value from rule
+                        if ($fieldDef && ($fieldDef->is_financial || !empty($fieldDef->fee_code))) {
+                            $items[] = [
+                                'field_id' => $fieldId,
+                                'field_name' => $fieldDef->name ?? $fieldId,
+                                'label' => $fieldDef->label ?? $fieldId,
+                                'amount' => $this->normalizeDecimal($value),
+                                'text_value' => $value,
+                                'fee_code' => $fieldDef->fee_code ?? null,
+                                'fee_version_id' => null,
+                                'action' => 'set_value',
+                                'is_insured' => $fieldDef->is_insured ?? false,
+                                'insurance_value' => $fieldDef->insurance_value ?? null,
+                            ];
+                            $processedFieldIds[$fieldId] = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        // CRITICAL: Deduplicate items by field_id + fee_code to prevent double-counting.
+        // This is a safety net to ensure financial integrity.
+        // Allows multiple items for the same field if they have different fee_codes.
+        $uniqueItems = [];
+        $seenKeys = [];
+        foreach ($items as $item) {
+            $fieldId = $item['field_id'] ?? null;
+            $feeCode = $item['fee_code'] ?? null;
+            
+            // Create a unique key based on field_id and fee_code
+            // If no fee_code, use field_id + amount to allow multiple different amounts
+            if ($feeCode) {
+                $key = $fieldId . '|' . $feeCode;
+            } else {
+                $amount = $item['amount'] ?? '0';
+                $key = $fieldId . '|' . $amount;
+            }
+            
+            if (!isset($seenKeys[$key])) {
+                $uniqueItems[] = $item;
+                $seenKeys[$key] = true;
+            }
+        }
+
+        return $uniqueItems;
     }
 
     /**
@@ -888,6 +1372,40 @@ class WorkflowExecutionService
             $total = bcadd($total, $amt, $this->ctx->scale());
         }
         return $total;
+    }
+
+    /**
+     * A set_fee / calculate action that resolved to a strictly positive amount.
+     * Used to decide whether an unmatched target is a silent-drop hazard.
+     */
+    protected function isPositiveFinancialAction(array $action): bool
+    {
+        $act = $action['action'] ?? '';
+        if (!in_array($act, ['set_fee', 'calculate'], true)) {
+            return false;
+        }
+        $amount = (string) ($action['resolved_amount'] ?? '0');
+        return is_numeric($amount) && bccomp($amount, '0', $this->ctx->scale()) > 0;
+    }
+
+    /**
+     * Fail closed: a positive fee/charge targeted a field absent from the step.
+     * Surfaces as a 422 FINANCIAL_INTEGRITY_ERROR rather than a silent zero total.
+     */
+    protected function failOnUnmatchedFinancialActions(array $unmatched): void
+    {
+        $summary = implode(', ', array_map(
+            fn ($a) => ($a['action'] ?? '?').' → '.($a['target_field_id'] ?? '?').' ('.($a['resolved_amount'] ?? '0').')',
+            $unmatched
+        ));
+
+        \Illuminate\Support\Facades\Log::error('calculateItems: financial action targets a field absent from the step', [
+            'unmatched_actions' => $unmatched,
+        ]);
+
+        throw new \App\Exceptions\Workflow\FinancialIntegrityException(
+            'إجراء مالي يستهدف حقلاً غير موجود في الخطوة الحالية — أُوقف الحفظ لمنع مجموع صفري صامت: '.$summary
+        );
     }
 
     protected function findNextVisibleStep(WorkflowVersion $version, int $startIndex, array $values): int
@@ -972,7 +1490,7 @@ class WorkflowExecutionService
                 }
             }
 
-            $feeVersion = $this->feeEngine->resolve($feeCode);
+            $feeVersion = $this->feeEngine->resolveActive($feeCode);
 
             $fees[$feeCode] = [
                 'charged_amount' => $chargedAmount,
@@ -1036,5 +1554,39 @@ class WorkflowExecutionService
             'division_by_zero_policy' => $this->ctx->divisionByZeroPolicy(),
             'fee_snapshots' => $this->ctx->feeSnapshots(),
         ];
+    }
+
+    /**
+     * Deduplicate calculated items by field_id + fee_code to prevent double-counting.
+     * Keeps the first occurrence of each unique combination.
+     * Allows multiple items for the same field if they have different fee_codes.
+     */
+    protected function deduplicateItemsByFieldId(array $items): array
+    {
+        $uniqueItems = [];
+        $seenKeys = [];
+        
+        foreach ($items as $item) {
+            $fieldId = $item['field_id'] ?? null;
+            $feeCode = $item['fee_code'] ?? null;
+            
+            // Create a unique key based on field_id and fee_code
+            // If no fee_code, use field_id + amount to allow multiple different amounts
+            if ($feeCode) {
+                $key = $fieldId . '|' . $feeCode;
+            } else {
+                $amount = $item['amount'] ?? '0';
+                $key = $fieldId . '|' . $amount;
+            }
+            
+            // If not seen before, add it
+            if (!isset($seenKeys[$key])) {
+                $uniqueItems[] = $item;
+                $seenKeys[$key] = true;
+            }
+            // Skip duplicates
+        }
+        
+        return $uniqueItems;
     }
 }

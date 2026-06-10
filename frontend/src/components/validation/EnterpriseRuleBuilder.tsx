@@ -2,6 +2,7 @@ import { useState, useCallback } from "react";
 import type { WorkflowField } from "@/types/workflow";
 import { workflowVersionApi } from "@/api/workflows";
 import { useOfficialFees } from "@/hooks/useFees";
+import { GovSelect, GovSelectMulti } from "@/components/ui/GovSelect";
 import type {
   EnterpriseRule,
   ConditionNode,
@@ -12,6 +13,7 @@ import type {
   ActionType,
 } from "@/types/enterprise-rule-engine";
 import { OPERATOR_METADATA as OPERATORS, ACTION_METADATA as ACTIONS } from "@/types/enterprise-rule-engine";
+import { fieldKey, findFieldByKey, fieldDisplayLabel } from "@/components/rules/fieldKey";
 
 interface EnterpriseRuleBuilderProps {
   workflowId: string;
@@ -32,7 +34,7 @@ function isSimpleCondition(cond: ConditionNode): cond is SimpleCondition {
 }
 
 function getFieldOptions(fieldId: string, fields: WorkflowField[], registers?: any[]): Array<{ label: string; value: string }> | null {
-  const field = fields.find((f) => f.id === fieldId);
+  const field = findFieldByKey(fields, fieldId);
   if (!field) return null;
 
   const fieldType = field.field_type ?? field.registerField?.field_type ?? "text";
@@ -77,34 +79,29 @@ function renderConditionValue(
     );
   }
 
-  const fieldType = fields.find((f) => f.id === fieldId)?.field_type ?? fields.find((f) => f.id === fieldId)?.registerField?.field_type ?? "text";
+  const fieldType = findFieldByKey(fields, fieldId)?.field_type ?? findFieldByKey(fields, fieldId)?.registerField?.field_type ?? "text";
 
   if (fieldType === "multi_select") {
     const selectedValues = Array.isArray(value) ? value : (value ? JSON.parse(value) : []);
     return (
-      <select
-        multiple
+      <GovSelectMulti
+        options={options}
         value={selectedValues}
-        onChange={(e) => {
-          const selected = Array.from(e.target.selectedOptions, (o) => o.value);
-          onChange(JSON.stringify(selected));
-        }}
-        style={{ ...inputStyle, flex: 1, minHeight: "60px" }}
-      >
-        {options.map((opt) => (
-          <option key={opt.value} value={opt.value}>{opt.label}</option>
-        ))}
-      </select>
+        onChange={(vals) => onChange(JSON.stringify(vals))}
+        placeholder="اختر..."
+        className="flex-1"
+      />
     );
   }
 
   return (
-    <select value={String(value ?? "")} onChange={(e) => onChange(e.target.value)} style={{ ...inputStyle, flex: 1 }}>
-      <option value="">اختر...</option>
-      {options.map((opt) => (
-        <option key={opt.value} value={opt.value}>{opt.label}</option>
-      ))}
-    </select>
+    <GovSelect
+      options={options}
+      value={String(value ?? "")}
+      onChange={(val) => onChange(val)}
+      placeholder="اختر..."
+      className="flex-1"
+    />
   );
 }
 
@@ -301,7 +298,7 @@ export default function EnterpriseRuleBuilder({
           <div style={{ fontSize: "13px", fontWeight: 500, color: "var(--color-text-success)", marginBottom: "8px" }}>محاكاة القاعدة</div>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: "8px", marginBottom: "8px" }}>
             {fields.map((f) => (
-              <input key={f.id} value={simValues[f.id] ?? ""} onChange={(e) => setSimValues({ ...simValues, [f.id]: e.target.value })} placeholder={f.label} style={inputStyle} />
+              <input key={f.id} value={simValues[fieldKey(f)] ?? ""} onChange={(e) => setSimValues({ ...simValues, [fieldKey(f)]: e.target.value })} placeholder={fieldDisplayLabel(f)} style={inputStyle} />
             ))}
           </div>
           <button onClick={handleSimulate} style={btnPrimary}>تشغيل المحاكاة</button>
@@ -425,7 +422,7 @@ export default function EnterpriseRuleBuilder({
                           updateCondition(idx, "conditions", newConditions);
                         }} style={{ ...inputStyle, flex: 1 }}>
                           <option value="">اختر الحقل...</option>
-                          {fields.map((f) => <option key={f.id} value={f.id}>{f.label}</option>)}
+                          {fields.map((f) => <option key={f.id} value={fieldKey(f)}>{fieldDisplayLabel(f)}</option>)}
                         </select>
                         <select value={sub.operator ?? "equals"} onChange={(e) => {
                           const newConditions = [...(cond as any).conditions];
@@ -452,7 +449,7 @@ export default function EnterpriseRuleBuilder({
                   <>
                     <select value={cond.field_id} onChange={(e) => updateCondition(idx, "field_id", e.target.value)} style={{ ...inputStyle, flex: 1 }}>
                       <option value="">اختر الحقل...</option>
-                      {fields.map((f) => <option key={f.id} value={f.id}>{f.label}</option>)}
+                      {fields.map((f) => <option key={f.id} value={fieldKey(f)}>{fieldDisplayLabel(f)}</option>)}
                     </select>
                     <select value={cond.operator} onChange={(e) => updateCondition(idx, "operator", e.target.value)} style={{ ...inputStyle, flex: 1, minWidth: "120px" }}>
                       {OPERATORS.map((op) => <option key={op.value} value={op.value}>{op.icon} {op.label}</option>)}
@@ -499,7 +496,7 @@ export default function EnterpriseRuleBuilder({
                         updateCase(caseIdx, "conditions", newConditions as any);
                       }} style={{ ...inputStyle, flex: 1 }}>
                         <option value="">اختر الحقل...</option>
-                        {fields.map((f) => <option key={f.id} value={f.id}>{f.label}</option>)}
+                        {fields.map((f) => <option key={f.id} value={fieldKey(f)}>{fieldDisplayLabel(f)}</option>)}
                       </select>
                       <select value={simpleCond.operator} onChange={(e) => {
                         const newConditions = [...caseItem.conditions] as SimpleCondition[];
@@ -542,7 +539,7 @@ export default function EnterpriseRuleBuilder({
                             updateCase(caseIdx, "actions", newActions);
                           }} style={{ ...inputStyle, flex: 1 }}>
                             <option value="">اختر الحقل...</option>
-                            {fields.map((f) => <option key={f.id} value={f.id}>{f.label}</option>)}
+                            {fields.map((f) => <option key={f.id} value={fieldKey(f)}>{fieldDisplayLabel(f)}</option>)}
                           </select>
                           <input value={String(act.value ?? "")} onChange={(e) => {
                             const newCaseActions = [...caseItem.actions];
@@ -559,7 +556,7 @@ export default function EnterpriseRuleBuilder({
                             updateCase(caseIdx, "actions", newActions);
                           }} style={{ ...inputStyle, flex: 1 }}>
                             <option value="">اختر الحقل المالي...</option>
-                            {fields.filter((f) => f.is_financial || f.field_type === "decimal" || f.field_type === "number").map((f) => <option key={f.id} value={f.id}>{f.label}</option>)}
+                            {fields.filter((f) => f.is_financial || f.field_type === "decimal" || f.field_type === "number").map((f) => <option key={f.id} value={fieldKey(f)}>{fieldDisplayLabel(f)}</option>)}
                           </select>
                           <select value={String(act.value ?? "")} onChange={(e) => {
                             const newCaseActions = [...caseItem.actions];
@@ -567,9 +564,10 @@ export default function EnterpriseRuleBuilder({
                             updateCase(caseIdx, "actions", newCaseActions);
                           }} style={{ ...inputStyle, flex: 1 }}>
                             <option value="">اختر الرسم...</option>
-                            {officialFees?.map((fee) => (
-                              <option key={fee.fee_code} value={fee.fee_code}>{fee.name_ar} ({fee.fee_code}) — {fee.amount?.toLocaleString("en")} د.ع</option>
-                            ))}
+                            {officialFees?.map((fee) => {
+                              const displayAmount = fee.resolved_amount ?? fee.amount;
+                              return <option key={fee.fee_code} value={fee.fee_code}>{fee.name_ar} ({fee.fee_code}) — {displayAmount?.toLocaleString("en")} د.ع</option>;
+                            })}
                           </select>
                         </>
                       )}
@@ -581,7 +579,7 @@ export default function EnterpriseRuleBuilder({
                             updateCase(caseIdx, "actions", newActions);
                           }} style={{ ...inputStyle, flex: 1 }}>
                             <option value="">اختر الحقل المالي...</option>
-                            {fields.filter((f) => f.is_financial || f.field_type === "decimal" || f.field_type === "number").map((f) => <option key={f.id} value={f.id}>{f.label}</option>)}
+                            {fields.filter((f) => f.is_financial || f.field_type === "decimal" || f.field_type === "number").map((f) => <option key={f.id} value={fieldKey(f)}>{fieldDisplayLabel(f)}</option>)}
                           </select>
                           <input value={String(act.value ?? "")} onChange={(e) => {
                             const newCaseActions = [...caseItem.actions];
@@ -615,7 +613,7 @@ export default function EnterpriseRuleBuilder({
                   <>
                     <select value={act.field_id} onChange={(e) => updateAction(idx, "field_id", e.target.value)} style={{ ...inputStyle, flex: 1 }}>
                       <option value="">اختر الحقل...</option>
-                      {fields.map((f) => <option key={f.id} value={f.id}>{f.label}</option>)}
+                      {fields.map((f) => <option key={f.id} value={fieldKey(f)}>{fieldDisplayLabel(f)}</option>)}
                     </select>
                     <input value={String(act.value ?? "")} onChange={(e) => updateAction(idx, "value", e.target.value)} placeholder="القيمة..." style={{ ...inputStyle, flex: 1 }} />
                   </>
@@ -624,7 +622,7 @@ export default function EnterpriseRuleBuilder({
                   <>
                     <select value={act.field_id} onChange={(e) => updateAction(idx, "field_id", e.target.value)} style={{ ...inputStyle, flex: 1 }}>
                       <option value="">اختر الحقل المالي...</option>
-                      {fields.filter((f) => f.is_financial || f.field_type === "decimal" || f.field_type === "number").map((f) => <option key={f.id} value={f.id}>{f.label}</option>)}
+                      {fields.filter((f) => f.is_financial || f.field_type === "decimal" || f.field_type === "number").map((f) => <option key={f.id} value={fieldKey(f)}>{fieldDisplayLabel(f)}</option>)}
                     </select>
                     <select value={String(act.value ?? "")} onChange={(e) => updateAction(idx, "value", e.target.value)} style={{ ...inputStyle, flex: 1 }}>
                       <option value="">اختر الرسم...</option>
@@ -638,7 +636,7 @@ export default function EnterpriseRuleBuilder({
                   <>
                     <select value={act.field_id} onChange={(e) => updateAction(idx, "field_id", e.target.value)} style={{ ...inputStyle, flex: 1 }}>
                       <option value="">اختر الحقل المالي...</option>
-                      {fields.filter((f) => f.is_financial || f.field_type === "decimal" || f.field_type === "number").map((f) => <option key={f.id} value={f.id}>{f.label}</option>)}
+                      {fields.filter((f) => f.is_financial || f.field_type === "decimal" || f.field_type === "number").map((f) => <option key={f.id} value={fieldKey(f)}>{fieldDisplayLabel(f)}</option>)}
                     </select>
                     <input value={String(act.value ?? "")} onChange={(e) => updateAction(idx, "value", e.target.value)} placeholder="نسبة الخصم %" style={{ ...inputStyle, flex: 1 }} />
                   </>

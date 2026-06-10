@@ -30,6 +30,7 @@ class WorkflowFieldSchemaBuilder
     protected CascadingSelectEngine $cascadeEngine;
     protected DynamicOptionSource $optionSource;
     protected CrossFieldValidationEngine $crossFieldValidation;
+    protected FieldInheritanceResolver $inheritanceResolver;
 
     public function __construct(
         RuleEngineV2 $ruleEngine,
@@ -37,7 +38,8 @@ class WorkflowFieldSchemaBuilder
         ComputedFieldEngine $computedEngine,
         CascadingSelectEngine $cascadeEngine,
         DynamicOptionSource $optionSource,
-        CrossFieldValidationEngine $crossFieldValidation
+        CrossFieldValidationEngine $crossFieldValidation,
+        FieldInheritanceResolver $inheritanceResolver
     ) {
         $this->ruleEngine = $ruleEngine;
         $this->validationEngine = $validationEngine;
@@ -45,6 +47,7 @@ class WorkflowFieldSchemaBuilder
         $this->cascadeEngine = $cascadeEngine;
         $this->optionSource = $optionSource;
         $this->crossFieldValidation = $crossFieldValidation;
+        $this->inheritanceResolver = $inheritanceResolver;
     }
 
     public function buildForVersion(Collection $workflowFields, array $values = [], array $context = []): array
@@ -65,18 +68,16 @@ class WorkflowFieldSchemaBuilder
         $isCustom = $wf->register_field_id === null;
         $fieldId = $isCustom ? 'custom_'.$wf->id : $wf->register_field_id;
 
-        // Use raw attribute for override detection to avoid DB default interference
-        $rawFieldType = $wf->getRawOriginal('field_type');
-        $hasTypeOverride = $rawFieldType !== null && $rawFieldType !== '' && $rawFieldType !== 'text';
-        $fieldType = $hasTypeOverride ? $rawFieldType : ($base?->field_type ?? 'text');
+        // Resolve inheritable properties through FieldInheritanceResolver
+        $fieldType = (string) ($this->inheritanceResolver->resolveProperty($wf, $base, 'field_type')['value'] ?? 'text');
 
         $validationRules = $this->validationEngine->resolveValidationRules($wf, $values, $context);
         $isVisible = $this->resolveVisibility($wf, $values, $context);
-        $isLocked = $this->resolveBoolOverride($wf->is_locked, $base?->is_locked ?? false);
-        $isEditable = $this->resolveBoolOverride($wf->is_editable, $base?->is_editable ?? true);
-        $isRequired = $this->resolveBoolOverride($wf->is_required, $base?->is_required ?? false);
-        $isInsured = $this->resolveBoolOverride($wf->is_insured, $base?->is_insured ?? false);
-        $isFinancial = $this->resolveBoolOverride($wf->is_financial, $base?->is_financial ?? false);
+        $isLocked = (bool) ($this->inheritanceResolver->resolveProperty($wf, $base, 'is_locked')['value'] ?? false);
+        $isEditable = (bool) ($this->inheritanceResolver->resolveProperty($wf, $base, 'is_editable')['value'] ?? true);
+        $isRequired = (bool) ($this->inheritanceResolver->resolveProperty($wf, $base, 'is_required')['value'] ?? false);
+        $isInsured = (bool) ($this->inheritanceResolver->resolveProperty($wf, $base, 'is_insured')['value'] ?? false);
+        $isFinancial = (bool) ($this->inheritanceResolver->resolveProperty($wf, $base, 'is_financial')['value'] ?? false);
         $isComputed = $wf->is_computed || !empty($wf->computed_formula);
 
         if ($isComputed) {
@@ -206,18 +207,15 @@ class WorkflowFieldSchemaBuilder
 
     protected function resolveOptions(WorkflowField $wf, ?RegisterField $base): array
     {
-        $rawFieldType = $wf->getRawOriginal('field_type');
-        $hasTypeOverride = $rawFieldType !== null && $rawFieldType !== '' && $rawFieldType !== 'text';
-        $fieldType = $hasTypeOverride ? $rawFieldType : ($base?->field_type ?? 'text');
+        $fieldType = (string) ($this->inheritanceResolver->resolveProperty($wf, $base, 'field_type')['value'] ?? 'text');
 
         if (in_array($fieldType, ['select', 'multi_select'], true)) {
-            // Check if workflow field has explicit options override
-            $wfOptions = $wf->options;
-            if (is_array($wfOptions) && !empty($wfOptions)) {
-                return $wfOptions;
+            $resolvedOptions = $this->inheritanceResolver->resolveProperty($wf, $base, 'options');
+            $options = $resolvedOptions['value'] ?? [];
+            if (is_array($options) && !empty($options)) {
+                return $options;
             }
-            // Fall back to register field options
-            return $base?->options ?? [];
+            return [];
         }
 
         return [];

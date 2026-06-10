@@ -81,7 +81,7 @@ class SettingController extends ApiController
         $this->authorize('manage-settings', Setting::class);
         $data = $request->validate([
             'settings' => 'required|array',
-            'settings.*.key' => 'required|string|exists:settings,key',
+            'settings.*.key' => 'required|string|max:100',
             'settings.*.value' => 'nullable|string',
         ]);
 
@@ -93,6 +93,18 @@ class SettingController extends ApiController
                 if ($old !== $item['value']) {
                     $this->logSettingChange($setting, 'updated', $old, $item['value']);
                 }
+            } else {
+                // Create setting if it doesn't exist
+                $setting = Setting::create([
+                    'id' => (string) Str::uuid(),
+                    'key' => $item['key'],
+                    'value' => $item['value'],
+                    'type' => 'string',
+                    'group' => 'general',
+                    'label_ar' => $item['key'],
+                    'is_public' => false,
+                ]);
+                $this->logSettingChange($setting, 'created', null, $item['value']);
             }
         }
 

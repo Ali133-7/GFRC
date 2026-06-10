@@ -34,6 +34,23 @@ class FeeVersion extends Model
                 $model->id = (string) Str::uuid();
             }
         });
+
+        static::saving(function (FeeVersion $version) {
+            $overlap = FeeVersion::where('fee_id', $version->fee_id)
+                ->where('id', '!=', $version->id ?? 0)
+                ->where(function ($q) use ($version) {
+                    $q->whereNull('effective_to')
+                      ->orWhere('effective_to', '>=', $version->effective_from);
+                })
+                ->where('effective_from', '<=', $version->effective_to ?? '9999-12-31')
+                ->exists();
+
+            if ($overlap) {
+                throw new \App\Exceptions\Workflow\TemporalOverlapException(
+                    "fee_id {$version->fee_id} already has an active version in this date range"
+                );
+            }
+        });
     }
 
     public function fee(): BelongsTo

@@ -18,6 +18,8 @@ class WorkflowExecution extends Model
         'workflow_version_id', 'register_id', 'status', 'mode', 'lock_version', 'current_step_index',
         'values_snapshot', 'calculated_items', 'total_amount', 'receipt_id',
         'branch_state', 'routing_history', 'preserved_values', 'state_mapping',
+        'field_states', 'rule_results', 'validation_results', 'routing_decisions', 'financial_trace',
+        'last_saved_at',
         'started_by', 'started_at', 'completed_at', 'cancelled_at',
         'cancel_reason', 'ip_address', 'user_agent',
     ];
@@ -32,6 +34,12 @@ class WorkflowExecution extends Model
         'routing_history' => 'array',
         'preserved_values' => 'array',
         'state_mapping' => 'array',
+        'field_states' => 'array',
+        'rule_results' => 'array',
+        'validation_results' => 'array',
+        'routing_decisions' => 'array',
+        'financial_trace' => 'array',
+        'last_saved_at' => 'datetime',
         'started_at' => 'datetime',
         'completed_at' => 'datetime',
         'cancelled_at' => 'datetime',
@@ -196,7 +204,7 @@ class WorkflowExecution extends Model
 
     public function isPaused(): bool
     {
-        return ($this->getBranchState()['paused'] ?? false) === true;
+        return $this->status === 'paused' || ($this->getBranchState()['paused'] ?? false) === true;
     }
 
     public function setRedirect(string $targetWorkflowId, ?string $targetStepId = null): void

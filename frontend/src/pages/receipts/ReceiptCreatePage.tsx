@@ -4,6 +4,7 @@ import { useQuery, useMutation } from "@tanstack/react-query";
 import client from "@/api/client";
 import DynamicReceiptForm from "@/components/receipt/DynamicReceiptForm";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
+import { GovSelect } from "@/components/ui/GovSelect";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { formatCurrency } from "@/utils/formatCurrency";
 import { amountToArabicWords } from "@/utils/amountToArabicWords";
@@ -236,19 +237,16 @@ export default function ReceiptCreatePage() {
 
     if (rf.field_type === "select") {
       return (
-        <select
+        <GovSelect
           value={val}
-          onChange={(e) => handleTemplateValueChange(rf.name, e.target.value)}
+          onChange={(v) => handleTemplateValueChange(rf.name, v)}
           disabled={tf.is_readonly || submitting}
-          style={baseInput}
-        >
-          <option value="">— اختر —</option>
-          {(rf.options ?? []).map((opt, idx) => {
-            const v = typeof opt === "string" ? opt : opt.value;
-            const label = typeof opt === "string" ? opt : opt.label_ar;
-            return <option key={v ?? idx} value={v}>{label}</option>;
-          })}
-        </select>
+          options={(rf.options ?? []).map((opt) => ({
+            value: typeof opt === "string" ? opt : opt.value,
+            label: typeof opt === "string" ? opt : opt.label_ar,
+          }))}
+          placeholder="— اختر —"
+        />
       );
     }
     if (rf.field_type === "textarea") {

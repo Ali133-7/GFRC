@@ -15,6 +15,12 @@ return Application::configure(basePath: dirname(__DIR__))
         commands: __DIR__.'/../routes/console.php',
         health: '/up',
     )
+    ->withSchedule(function ($schedule) {
+        $schedule->command('workflow:cleanup-abandoned')
+            ->hourly()
+            ->withoutOverlapping()
+            ->runInBackground();
+    })
     ->withMiddleware(function (Middleware $middleware): void {
         $middleware->api(append: [
             SecurityHeaders::class,
@@ -28,6 +34,47 @@ return Application::configure(basePath: dirname(__DIR__))
                     'message' => 'تم تجاوز الحد المسموح من الطلبات. يرجى الانتظار.',
                     'error_code' => 'RATE_LIMIT_EXCEEDED',
                 ], 429);
+            }
+        });
+
+        $exceptions->render(function (\App\Exceptions\Workflow\ExecutionNotInProgressException $e, Request $request) {
+            if ($request->is('api/*')) {
+                return response()->json([
+                    'success' => false,
+                    'message' => $e->getMessage(),
+                    'error_code' => 'EXECUTION_NOT_IN_PROGRESS',
+                ], $e->getCode() ?: 409);
+            }
+        });
+
+        $exceptions->render(function (\App\Exceptions\Workflow\ExecutionPausedException $e, Request $request) {
+            if ($request->is('api/*')) {
+                return response()->json([
+                    'success' => false,
+                    'message' => $e->getMessage(),
+                    'error_code' => 'EXECUTION_PAUSED',
+                ], $e->getCode() ?: 422);
+            }
+        });
+
+        $exceptions->render(function (\App\Exceptions\Workflow\ValidationBlockedException $e, Request $request) {
+            if ($request->is('api/*')) {
+                return response()->json([
+                    'success' => false,
+                    'message' => $e->getMessage(),
+                    'error_code' => 'VALIDATION_BLOCKED',
+                    'blocks' => $e->blocks,
+                ], $e->getCode() ?: 422);
+            }
+        });
+
+        $exceptions->render(function (\App\Exceptions\Workflow\FinancialIntegrityException $e, Request $request) {
+            if ($request->is('api/*')) {
+                return response()->json([
+                    'success' => false,
+                    'message' => $e->getMessage(),
+                    'error_code' => 'FINANCIAL_INTEGRITY_ERROR',
+                ], $e->getCode() ?: 422);
             }
         });
     })->create();

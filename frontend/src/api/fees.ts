@@ -6,6 +6,9 @@ export interface OfficialFee {
   name_ar: string;
   name_en: string | null;
   amount: number;
+  resolved_amount?: number;
+  resolved_version?: number;
+  resolved_version_id?: string;
 }
 
 export const feeApi = {

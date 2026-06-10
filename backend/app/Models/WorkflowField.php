@@ -89,76 +89,75 @@ class WorkflowField extends Model
 
     public function getFieldTypeAttribute(): string
     {
-        $raw = $this->attributes['field_type'] ?? null;
-        // Only treat as override if explicitly set to a non-default value
-        $hasExplicitOverride = $raw !== null && $raw !== '' && $raw !== 'text';
-        if ($hasExplicitOverride) {
-            return $raw;
-        }
-        return $this->registerField?->field_type ?? 'text';
+        $resolved = app(\App\Services\FieldInheritanceResolver::class)
+            ->resolveProperty($this, $this->registerField, 'field_type');
+        return (string) ($resolved['value'] ?? 'text');
     }
 
     public function getResolvedOptionsAttribute(): array
     {
-        if (is_array($this->options) && !empty($this->options)) {
-            return $this->options;
-        }
-        return $this->registerField?->options ?? [];
+        $resolved = app(\App\Services\FieldInheritanceResolver::class)
+            ->resolveProperty($this, $this->registerField, 'options');
+        return (array) ($resolved['value'] ?? []);
     }
 
     public function getResolvedDefaultValueAttribute(): mixed
     {
-        if ($this->default_value !== null && $this->default_value !== '') {
-            return $this->default_value;
-        }
-        return $this->registerField?->default_value;
+        $resolved = app(\App\Services\FieldInheritanceResolver::class)
+            ->resolveProperty($this, $this->registerField, 'default_value');
+        return $resolved['value'];
     }
 
     public function getResolvedIsRequiredAttribute(): bool
     {
-        return $this->is_required ?? $this->registerField?->is_required ?? false;
+        $resolved = app(\App\Services\FieldInheritanceResolver::class)
+            ->resolveProperty($this, $this->registerField, 'is_required');
+        return (bool) ($resolved['value'] ?? false);
     }
 
     public function getResolvedIsVisibleAttribute(): bool
     {
-        return $this->is_visible ?? $this->registerField?->is_visible ?? true;
+        $resolved = app(\App\Services\FieldInheritanceResolver::class)
+            ->resolveProperty($this, $this->registerField, 'is_visible');
+        return (bool) ($resolved['value'] ?? true);
     }
 
     public function getResolvedIsEditableAttribute(): bool
     {
-        return $this->is_editable ?? $this->registerField?->is_editable ?? true;
+        $resolved = app(\App\Services\FieldInheritanceResolver::class)
+            ->resolveProperty($this, $this->registerField, 'is_editable');
+        return (bool) ($resolved['value'] ?? true);
     }
 
     public function getResolvedIsLockedAttribute(): bool
     {
-        return $this->is_locked ?? $this->registerField?->is_locked ?? false;
+        $resolved = app(\App\Services\FieldInheritanceResolver::class)
+            ->resolveProperty($this, $this->registerField, 'is_locked');
+        return (bool) ($resolved['value'] ?? false);
     }
 
     public function getResolvedIsFinancialAttribute(): bool
     {
-        return $this->is_financial ?? $this->registerField?->is_financial ?? false;
+        $resolved = app(\App\Services\FieldInheritanceResolver::class)
+            ->resolveProperty($this, $this->registerField, 'is_financial');
+        return (bool) ($resolved['value'] ?? false);
     }
 
     public function getResolvedIsInsuredAttribute(): bool
     {
-        return $this->is_insured ?? $this->registerField?->is_insured ?? false;
+        $resolved = app(\App\Services\FieldInheritanceResolver::class)
+            ->resolveProperty($this, $this->registerField, 'is_insured');
+        return (bool) ($resolved['value'] ?? false);
     }
 
     public function getResolvedValidationRulesAttribute(): array
     {
-        if (is_array($this->validation_rules)) {
-            return $this->validation_rules;
+        $resolved = app(\App\Services\FieldInheritanceResolver::class)
+            ->resolveProperty($this, $this->registerField, 'validation_rules');
+        $value = $resolved['value'] ?? [];
+        if (is_string($value) && $value !== '') {
+            return explode('|', $value);
         }
-        if (is_string($this->validation_rules) && $this->validation_rules !== '') {
-            return explode('|', $this->validation_rules);
-        }
-        $baseRules = $this->registerField?->validation_rules;
-        if (is_array($baseRules)) {
-            return $baseRules;
-        }
-        if (is_string($baseRules) && $baseRules !== '') {
-            return explode('|', $baseRules);
-        }
-        return [];
+        return (array) $value;
     }
 }

@@ -112,7 +112,7 @@ class CustomFieldCalculationTest extends TestCase
     }
 
     #[\PHPUnit\Framework\Attributes\Test]
-    public function it_includes_financial_calculation_trace()
+    public function it_includes_financial_trace()
     {
         $step = $this->createWorkflowStep($this->version);
 
@@ -136,16 +136,81 @@ class CustomFieldCalculationTest extends TestCase
             $fieldId => '500',
         ]);
 
-        $this->assertArrayHasKey('financial_calculation_trace', $result);
-        $this->assertNotEmpty($result['financial_calculation_trace']);
+        $this->assertArrayHasKey('financial_trace', $result);
+        // No fee/calculate/discount actions were triggered → trace is empty for this simple case
+        $this->assertEmpty($result['financial_trace']);
+        $this->assertArrayHasKey('snapshot_hash', $result);
+        $this->assertNotEmpty($result['snapshot_hash']);
+        $this->assertEquals('0.000', $result['discount_applied']);
+    }
 
-        $trace = $result['financial_calculation_trace'][0];
-        $this->assertEquals($fieldId, $trace['field_id']);
-        $this->assertTrue($trace['is_financial']);
-        $this->assertEquals('500', $trace['raw_value']);
-        $this->assertTrue($trace['is_numeric']);
-        $this->assertEquals('500.000', $trace['calculated_amount']);
-        $this->assertTrue($trace['included_in_total']);
+    #[\PHPUnit\Framework\Attributes\Test]
+    public function it_includes_financial_trace_for_fee_and_discount()
+    {
+        $step = $this->createWorkflowStep($this->version);
+
+        $amountField = WorkflowField::create([
+            'workflow_version_id' => $this->version->id,
+            'step_id' => $step->id,
+            'custom_name' => 'amount',
+            'custom_label' => 'المبلغ',
+            'field_type' => 'decimal',
+            'is_financial' => true,
+            'is_visible' => true,
+        ]);
+
+        $amountFieldId = 'custom_'.$amountField->id;
+
+        WorkflowRule::create([
+            'workflow_version_id' => $this->version->id,
+            'name' => 'Set base fee',
+            'condition_logic' => ['operator' => 'is_not_empty', 'field_id' => $amountFieldId],
+            'actions' => [
+                ['action' => 'set_fee', 'target_field_id' => $amountFieldId, 'fee_code' => 'GOV-001'],
+            ],
+            'is_active' => true,
+        ]);
+
+        WorkflowRule::create([
+            'workflow_version_id' => $this->version->id,
+            'name' => 'Apply discount',
+            'condition_logic' => ['operator' => 'is_not_empty', 'field_id' => $amountFieldId],
+            'actions' => [
+                ['action' => 'apply_discount', 'target_field_id' => $amountFieldId, 'discount_type' => 'percentage', 'discount_value' => '10'],
+            ],
+            'is_active' => true,
+        ]);
+
+        $this->version->update(['status' => 'active']);
+
+        $execution = $this->app->make(WorkflowExecutionService::class)->start($this->version, $this->admin->id);
+
+        $result = $this->app->make(WorkflowExecutionService::class)->submitStep($execution, 0, [
+            $amountFieldId => '500',
+        ]);
+
+        $this->assertArrayHasKey('financial_trace', $result);
+        $this->assertCount(2, $result['financial_trace']);
+
+        // First trace: fee_resolution
+        $trace0 = $result['financial_trace'][0];
+        $this->assertEquals('fee_resolution', $trace0['step']);
+        $this->assertEquals($amountFieldId, $trace0['field_id']);
+        $this->assertEquals('GOV-001', $trace0['fee_code']);
+        $this->assertEquals('15.500', $trace0['result']);
+
+        // Second trace: discount
+        $trace1 = $result['financial_trace'][1];
+        $this->assertEquals('discount', $trace1['step']);
+        $this->assertEquals($amountFieldId, $trace1['field_id']);
+        $this->assertEquals('percentage', $trace1['type']);
+        $this->assertEquals('10.0', $trace1['value']);
+        $this->assertEquals('15.500', $trace1['applied_to']);
+        $this->assertEquals('13.950', $trace1['result']);
+
+        $this->assertEquals('1.550', $result['discount_applied']);
+        $this->assertArrayHasKey('snapshot_hash', $result);
+        $this->assertNotEmpty($result['snapshot_hash']);
     }
 
     #[\PHPUnit\Framework\Attributes\Test]

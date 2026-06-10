@@ -1,6 +1,8 @@
 import { useState, useMemo } from "react";
 import type { WorkflowField, WorkflowRule } from "@/types/workflow";
 import { workflowVersionApi } from "@/api/workflows";
+import { GovSelect, GovSelectMulti } from "@/components/ui/GovSelect";
+import { fieldKey, findFieldByKey, fieldDisplayLabel } from "@/components/rules/fieldKey";
 
 interface ValidationRuleBuilderProps {
   workflowId: string;
@@ -27,6 +29,22 @@ const RESPONSE_TYPES = [
   { value: "warning", label: "تحذير فقط", color: "warning" },
   { value: "confirm", label: "تأكيد قبل المتابعة", color: "info" },
 ];
+
+function getFieldOptions(fieldId: string, fields: WorkflowField[]): Array<{ label: string; value: string }> | null {
+  const field = findFieldByKey(fields, fieldId);
+  if (!field) return null;
+  const fieldType = field.field_type ?? field.registerField?.field_type ?? "text";
+  if (!["select", "dropdown", "radio", "multi_select"].includes(fieldType)) return null;
+  const rawOptions = field.options ?? field.registerField?.options ?? null;
+  if (!rawOptions) return null;
+  if (Array.isArray(rawOptions)) {
+    return rawOptions.map((opt: any) => {
+      if (typeof opt === "string") return { label: opt, value: opt };
+      return { label: opt.label_ar ?? opt.label ?? opt.value, value: opt.value };
+    });
+  }
+  return null;
+}
 
 export default function ValidationRuleBuilder({
   workflowId,
@@ -337,7 +355,7 @@ export default function ValidationRuleBuilder({
                 >
                   <option value="">حقل من سير العمل...</option>
                   {fields.map((f) => (
-                    <option key={f.id} value={f.id}>{f.label}</option>
+                    <option key={f.id} value={fieldKey(f)}>{fieldDisplayLabel(f)}</option>
                   ))}
                 </select>
                 <span style={{ color: "var(--color-text-tertiary)", fontSize: "14px" }}>→</span>
@@ -408,7 +426,7 @@ export default function ValidationRuleBuilder({
                   >
                     <option value="">اختر الحقل...</option>
                     {fields.map((f) => (
-                      <option key={f.id} value={f.id}>{f.label}</option>
+                      <option key={f.id} value={fieldKey(f)}>{fieldDisplayLabel(f)}</option>
                     ))}
                   </select>
                   <select
@@ -425,12 +443,28 @@ export default function ValidationRuleBuilder({
                     <option value="not_empty">غير فارغ</option>
                   </select>
                   {!["empty", "not_empty"].includes(tc.operator) && (
-                    <input
-                      value={tc.value}
-                      onChange={(e) => updateTriggerCondition(idx, "value", e.target.value)}
-                      placeholder="القيمة..."
-                      style={{ ...inputStyle, flex: 1 }}
-                    />
+                    (() => {
+                      const opts = getFieldOptions(tc.field_id, fields);
+                      if (opts) {
+                        return (
+                          <GovSelect
+                            options={opts}
+                            value={tc.value}
+                            onChange={(val) => updateTriggerCondition(idx, "value", val)}
+                            placeholder="اختر قيمة..."
+                            className="flex-1"
+                          />
+                        );
+                      }
+                      return (
+                        <input
+                          value={tc.value}
+                          onChange={(e) => updateTriggerCondition(idx, "value", e.target.value)}
+                          placeholder="القيمة..."
+                          style={{ ...inputStyle, flex: 1 }}
+                        />
+                      );
+                    })()
                   )}
                   {triggerConditions.length > 1 && (
                     <button onClick={() => removeTriggerCondition(idx)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: "14px", color: "var(--color-text-danger)" }}>×</button>
@@ -560,7 +594,7 @@ export default function ValidationRuleBuilder({
                   >
                     <option value="">اختر الحقل...</option>
                     {fields.map((f) => (
-                      <option key={f.id} value={f.id}>{f.label}</option>
+                      <option key={f.id} value={fieldKey(f)}>{fieldDisplayLabel(f)}</option>
                     ))}
                   </select>
                   {fe.action === "set_value" && (

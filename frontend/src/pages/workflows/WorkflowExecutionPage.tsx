@@ -11,6 +11,7 @@ import {
 } from "@/hooks/useWorkflows";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
+import { GovSelect, GovSelectMulti } from "@/components/ui/GovSelect";
 import BranchHandler from "@/components/execution/BranchHandler";
 import type { WorkflowField, WorkflowStep } from "@/types/workflow";
 
@@ -50,7 +51,7 @@ export default function WorkflowExecutionPage() {
   const [executionId, setExecutionId] = useState<string | null>(null);
   const [stepIndex, setStepIndex] = useState(0);
   const [values, setValues] = useState<Record<string, string>>({});
-  const [fieldStates, setFieldStates] = useState<Record<string, { is_visible: boolean; is_required: boolean; is_readonly: boolean }>>({});
+  const [fieldStates, setFieldStates] = useState<Record<string, { is_visible: boolean; is_required: boolean; is_readonly: boolean; is_editable?: boolean; is_locked?: boolean; field_type?: string; options?: any }>>({});
   const [preview, setPreview] = useState<any>(null);
   const [isReview, setIsReview] = useState(false);
   const [notes, setNotes] = useState("");
@@ -61,6 +62,7 @@ export default function WorkflowExecutionPage() {
   const [debugMode, setDebugMode] = useState(false);
   const [debugTrace, setDebugTrace] = useState<any>(null);
   const [shownFieldIds, setShownFieldIds] = useState<Set<string>>(new Set());
+  const [fontSize, setFontSize] = useState(14);
 
   const activeVersion = execVersion ?? versions?.find((v: any) => v.id === versionIdFromUrl) ?? versions?.find((v: any) => v.status === "active");
   const steps = activeVersion?.steps?.sort((a: WorkflowStep, b: WorkflowStep) => a.sort_order - b.sort_order) ?? [];
@@ -160,11 +162,13 @@ export default function WorkflowExecutionPage() {
             setValues((prev) => ({ ...prev, ...data.modified_values }));
           }
           if (data.field_states) {
-            setFieldStates(data.field_states);
-            // Track fields that have been shown by rule actions
+            setFieldStates(prev => ({ ...prev, ...data.field_states }));
+            // Track fields that have been shown by rule actions (only newly shown, not all visible)
             const newlyShown = new Set<string>();
             for (const [fid, state] of Object.entries(data.field_states)) {
-              if ((state as any).is_visible === true) {
+              const wasHidden = fieldStates[fid]?.is_visible === false;
+              const nowVisible = (state as any).is_visible === true;
+              if (wasHidden && nowVisible) {
                 newlyShown.add(fid);
               }
             }
@@ -230,34 +234,91 @@ export default function WorkflowExecutionPage() {
     const newValues = { ...values };
     const newlyShown = new Set<string>();
 
+    const resolveEffectFieldId = (effectFieldId: string): string => {
+      const field = allVersionFields.find(
+        (f: WorkflowField) => f.id === effectFieldId || f.register_field_id === effectFieldId
+      );
+      return field ? (field.register_field_id ?? `custom_${field.id}`) : effectFieldId;
+    };
+
     for (const effect of effects) {
+      const canonicalId = resolveEffectFieldId(effect.field_id);
       switch (effect.action) {
         case "hide":
-          newFieldStates[effect.field_id] = {
-            ...(newFieldStates[effect.field_id] ?? { is_visible: true, is_required: false, is_readonly: false }),
+          newFieldStates[canonicalId] = {
+            ...(newFieldStates[canonicalId] ?? { is_visible: true, is_required: false, is_readonly: false }),
             is_visible: false,
           };
           break;
         case "show":
-          newFieldStates[effect.field_id] = {
-            ...(newFieldStates[effect.field_id] ?? { is_visible: true, is_required: false, is_readonly: false }),
+          newFieldStates[canonicalId] = {
+            ...(newFieldStates[canonicalId] ?? { is_visible: true, is_required: false, is_readonly: false }),
             is_visible: true,
           };
-          newlyShown.add(effect.field_id);
+          newlyShown.add(canonicalId);
           break;
         case "set_value":
-          newValues[effect.field_id] = effect.value ?? "";
+          newValues[canonicalId] = effect.value ?? "";
           break;
         case "set_required":
-          newFieldStates[effect.field_id] = {
-            ...(newFieldStates[effect.field_id] ?? { is_visible: true, is_required: false, is_readonly: false }),
+          newFieldStates[canonicalId] = {
+            ...(newFieldStates[canonicalId] ?? { is_visible: true, is_required: false, is_readonly: false }),
             is_required: true,
           };
           break;
         case "set_readonly":
-          newFieldStates[effect.field_id] = {
-            ...(newFieldStates[effect.field_id] ?? { is_visible: true, is_required: false, is_readonly: false }),
+          newFieldStates[canonicalId] = {
+            ...(newFieldStates[canonicalId] ?? { is_visible: true, is_required: false, is_readonly: false }),
             is_readonly: true,
+            is_editable: false,
+          };
+          break;
+        case "set_editable":
+          newFieldStates[canonicalId] = {
+            ...(newFieldStates[canonicalId] ?? { is_visible: true, is_required: false, is_readonly: false }),
+            is_editable: true,
+            is_readonly: false,
+          };
+          break;
+        case "set_lock":
+          newFieldStates[canonicalId] = {
+            ...(newFieldStates[canonicalId] ?? { is_visible: true, is_required: false, is_readonly: false }),
+            is_readonly: true,
+            is_locked: true,
+          };
+          break;
+        case "unlock":
+          newFieldStates[canonicalId] = {
+            ...(newFieldStates[canonicalId] ?? { is_visible: true, is_required: false, is_readonly: false }),
+            is_readonly: false,
+            is_locked: false,
+          };
+          break;
+        case "set_visibility":
+          newFieldStates[canonicalId] = {
+            ...(newFieldStates[canonicalId] ?? { is_visible: true, is_required: false, is_readonly: false }),
+            is_visible: effect.value === 'visible' || effect.value === 'show' || String(effect.value) === 'true' || String(effect.value) === '1',
+          };
+          if (effect.value === 'visible' || effect.value === 'show' || String(effect.value) === 'true' || String(effect.value) === '1') {
+            newlyShown.add(canonicalId);
+          }
+          break;
+        case "set_optional":
+          newFieldStates[canonicalId] = {
+            ...(newFieldStates[canonicalId] ?? { is_visible: true, is_required: false, is_readonly: false }),
+            is_required: false,
+          };
+          break;
+        case "set_field_type":
+          newFieldStates[canonicalId] = {
+            ...(newFieldStates[canonicalId] ?? { is_visible: true, is_required: false, is_readonly: false }),
+            field_type: effect.value ?? 'text',
+          };
+          break;
+        case "set_options":
+          newFieldStates[canonicalId] = {
+            ...(newFieldStates[canonicalId] ?? { is_visible: true, is_required: false, is_readonly: false }),
+            options: effect.value ?? [],
           };
           break;
       }
@@ -416,9 +477,14 @@ export default function WorkflowExecutionPage() {
     const fid = resolveFieldId(field);
     const state = fieldStates[fid];
     return {
-      isVisible: state ? state.is_visible : field.is_visible,
-      isRequired: state ? state.is_required : field.is_required,
-      isReadonly: state ? state.is_readonly : field.is_readonly,
+      isVisible: state ? (state as any).is_visible ?? field.is_visible : field.is_visible,
+      isRequired: state ? (state as any).is_required ?? field.is_required : field.is_required,
+      isReadonly: state ? (state as any).is_readonly ?? field.is_readonly : field.is_readonly,
+      isEditable: state ? (state as any).is_editable ?? (field.is_editable ?? true) : (field.is_editable ?? true),
+      isLocked: state ? (state as any).is_locked ?? field.is_locked : field.is_locked,
+      isFinancial: state ? (state as any).is_financial ?? field.is_financial : field.is_financial,
+      fieldType: state ? (state as any).field_type ?? field.field_type : field.field_type,
+      options: state ? (state as any).options ?? field.options : field.options,
     };
   };
 
@@ -427,53 +493,45 @@ export default function WorkflowExecutionPage() {
     const val = values[fid] ?? field.default_value ?? "";
     const label = field.label;
     const state = getFieldState(field);
-    const fieldType = resolveFieldType(field);
-    const options = resolveFieldOptions(field);
+    const fieldType = state.fieldType && (state.fieldType as string) !== '' ? (state.fieldType as string) : resolveFieldType(field);
+    const opts = state.options && Array.isArray(state.options) && (state.options as any[]).length > 0
+      ? (state.options as any[]).map((opt: any) => typeof opt === 'string' ? { value: opt, label: opt } : { value: opt.value, label: opt.label_ar ?? opt.label ?? opt.value })
+      : resolveFieldOptions(field);
 
     switch (fieldType) {
       case "select":
       case "radio":
         return (
-          <select
+          <GovSelect
+            options={opts}
             value={val}
-            onChange={(e) => handleFieldChange(fid, e.target.value)}
-            style={inputStyle}
-            disabled={state.isReadonly}
-          >
-            <option value="">اختر...</option>
-            {options.map((opt) => (
-              <option key={opt.value} value={opt.value}>{opt.label}</option>
-            ))}
-          </select>
+            onChange={(v) => handleFieldChange(fid, v)}
+            placeholder="اختر..."
+            disabled={state.isReadonly || state.isLocked}
+            required={state.isRequired}
+          />
         );
       case "multi_select":
         return (
-          <select
-            multiple
+          <GovSelectMulti
+            options={opts}
             value={val ? (Array.isArray(val) ? val : JSON.parse(val)) : []}
-            onChange={(e) => {
-              const selected = Array.from(e.target.selectedOptions, (o) => o.value);
-              handleFieldChange(fid, JSON.stringify(selected));
-            }}
-            style={{ ...inputStyle, minHeight: "80px" }}
-            disabled={state.isReadonly}
-          >
-            {options.map((opt) => (
-              <option key={opt.value} value={opt.value}>{opt.label}</option>
-            ))}
-          </select>
+            onChange={(vals) => handleFieldChange(fid, JSON.stringify(vals))}
+            placeholder="اختر..."
+            disabled={state.isReadonly || state.isLocked}
+          />
         );
       case "checkbox":
         return (
-          <label style={{ display: "flex", alignItems: "center", gap: "10px", cursor: state.isReadonly ? "not-allowed" : "pointer", padding: "8px 0" }}>
+          <label style={{ display: "flex", alignItems: "center", gap: "10px", cursor: (state.isReadonly || state.isLocked) ? "not-allowed" : "pointer", padding: "8px 0" }}>
             <input
               type="checkbox"
               checked={toBoolean(val)}
               onChange={(e) => handleFieldChange(fid, e.target.checked ? "1" : "0")}
-              disabled={state.isReadonly}
-              style={{ width: "18px", height: "18px", cursor: state.isReadonly ? "not-allowed" : "pointer" }}
+              disabled={state.isReadonly || state.isLocked}
+              style={{ width: "18px", height: "18px", cursor: (state.isReadonly || state.isLocked) ? "not-allowed" : "pointer" }}
             />
-            <span style={{ fontSize: "13px", color: state.isReadonly ? "var(--color-text-tertiary)" : "var(--color-text-primary)" }}>{label}</span>
+            <span style={{ fontSize: "13px", color: (state.isReadonly || state.isLocked) ? "var(--color-text-tertiary)" : "var(--color-text-primary)" }}>{label}</span>
           </label>
         );
       case "number":
@@ -484,9 +542,11 @@ export default function WorkflowExecutionPage() {
             value={val}
             onChange={(e) => handleFieldChange(fid, e.target.value)}
             style={inputStyle}
-            disabled={state.isReadonly}
+            disabled={state.isReadonly || state.isLocked}
+            readOnly={state.isReadonly}
             placeholder={field.placeholder ?? ""}
             step={fieldType === "decimal" ? "0.001" : "1"}
+            required={state.isRequired}
           />
         );
       case "date":
@@ -496,7 +556,9 @@ export default function WorkflowExecutionPage() {
             value={val}
             onChange={(e) => handleFieldChange(fid, e.target.value)}
             style={inputStyle}
-            disabled={state.isReadonly}
+            disabled={state.isReadonly || state.isLocked}
+            readOnly={state.isReadonly}
+            required={state.isRequired}
           />
         );
       case "datetime":
@@ -506,7 +568,9 @@ export default function WorkflowExecutionPage() {
             value={val}
             onChange={(e) => handleFieldChange(fid, e.target.value)}
             style={inputStyle}
-            disabled={state.isReadonly}
+            disabled={state.isReadonly || state.isLocked}
+            readOnly={state.isReadonly}
+            required={state.isRequired}
           />
         );
       case "email":
@@ -516,8 +580,10 @@ export default function WorkflowExecutionPage() {
             value={val}
             onChange={(e) => handleFieldChange(fid, e.target.value)}
             style={inputStyle}
-            disabled={state.isReadonly}
+            disabled={state.isReadonly || state.isLocked}
+            readOnly={state.isReadonly}
             placeholder={field.placeholder ?? ""}
+            required={state.isRequired}
           />
         );
       case "phone":
@@ -527,8 +593,10 @@ export default function WorkflowExecutionPage() {
             value={val}
             onChange={(e) => handleFieldChange(fid, e.target.value)}
             style={inputStyle}
-            disabled={state.isReadonly}
+            disabled={state.isReadonly || state.isLocked}
+            readOnly={state.isReadonly}
             placeholder={field.placeholder ?? ""}
+            required={state.isRequired}
           />
         );
       case "url":
@@ -538,8 +606,10 @@ export default function WorkflowExecutionPage() {
             value={val}
             onChange={(e) => handleFieldChange(fid, e.target.value)}
             style={inputStyle}
-            disabled={state.isReadonly}
+            disabled={state.isReadonly || state.isLocked}
+            readOnly={state.isReadonly}
             placeholder={field.placeholder ?? ""}
+            required={state.isRequired}
           />
         );
       case "textarea":
@@ -548,8 +618,10 @@ export default function WorkflowExecutionPage() {
             value={val}
             onChange={(e) => handleFieldChange(fid, e.target.value)}
             style={{ ...inputStyle, minHeight: "80px", resize: "vertical" }}
-            disabled={state.isReadonly}
+            disabled={state.isReadonly || state.isLocked}
+            readOnly={state.isReadonly}
             placeholder={field.placeholder ?? ""}
+            required={state.isRequired}
           />
         );
       default:
@@ -559,8 +631,10 @@ export default function WorkflowExecutionPage() {
             value={val}
             onChange={(e) => handleFieldChange(fid, e.target.value)}
             style={inputStyle}
-            disabled={state.isReadonly}
+            disabled={state.isReadonly || state.isLocked}
+            readOnly={state.isReadonly}
             placeholder={field.placeholder ?? ""}
+            required={state.isRequired}
           />
         );
     }
@@ -728,79 +802,114 @@ export default function WorkflowExecutionPage() {
 
       {isReview ? (
         <div>
-          {/* Review screen */}
+          {/* Font Size Control */}
+          <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: "12px", gap: "8px" }}>
+            <button
+              onClick={() => setFontSize((s) => Math.max(12, s - 1))}
+              style={{ padding: "4px 10px", fontSize: "12px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "4px", background: "var(--color-background-secondary)", cursor: "pointer", fontFamily: "inherit" }}
+            >
+              أ-
+            </button>
+            <span style={{ fontSize: "12px", color: "var(--color-text-secondary)", padding: "4px 8px" }}>{fontSize}px</span>
+            <button
+              onClick={() => setFontSize((s) => Math.min(20, s + 1))}
+              style={{ padding: "4px 10px", fontSize: "12px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "4px", background: "var(--color-background-secondary)", cursor: "pointer", fontFamily: "inherit" }}
+            >
+              أ+
+            </button>
+          </div>
+
+          {/* Review Summary */}
           <div
             style={{
               background: "var(--color-background-primary)",
-              border: "0.5px solid var(--color-border-tertiary)",
+              border: "1px solid var(--color-border-secondary)",
               borderRadius: "var(--border-radius-lg)",
-              padding: "16px",
+              overflow: "hidden",
               marginBottom: "16px",
             }}
           >
-            <div style={{ fontSize: "14px", fontWeight: 500, marginBottom: "12px" }}>ملخص المعاملة</div>
-            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px" }}>
-              <tbody>
-                {preview?.items?.map((item: any, i: number) => (
-                  <tr key={i} style={{ borderBottom: "0.5px solid var(--color-border-tertiary)" }}>
-                    <td style={{ padding: "8px 0", color: "var(--color-text-secondary)" }}>
-                      {item.label}
-                      {item.action && (
-                        <span style={{ fontSize: "10px", marginRight: "6px", padding: "1px 5px", background: "var(--color-background-info)", color: "var(--color-text-info)", borderRadius: "3px" }}>
-                          {item.action}
-                        </span>
-                      )}
-                    </td>
-                    <td style={{ padding: "8px 0", textAlign: "left", fontWeight: 500, direction: "ltr" }}>
-                      {item.amount > 0 ? `${item.amount.toLocaleString("en")} د.ع` : item.text_value ?? "—"}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            <div
-              style={{
-                marginTop: "12px",
-                paddingTop: "12px",
-                borderTop: "1px solid var(--color-border-secondary)",
-                display: "flex",
-                justifyContent: "space-between",
-                fontSize: "16px",
-                fontWeight: 500,
-              }}
-            >
-              <span>الإجمالي</span>
-              <span style={{ direction: "ltr" }}>{preview?.total_amount?.toLocaleString("en")} د.ع</span>
+            {/* Header */}
+            <div style={{ background: "var(--color-background-secondary)", padding: "14px 20px", borderBottom: "1px solid var(--color-border-tertiary)" }}>
+              <div style={{ fontSize: `${fontSize + 2}px`, fontWeight: 600, color: "var(--color-text-primary)" }}>ملخص المعاملة</div>
             </div>
 
-            {/* Modified values (set_value actions) */}
-            {preview?.modified_values && Object.keys(preview.modified_values).length > 0 && (
-              <div style={{ marginTop: "16px" }}>
-                <div style={{ fontSize: "13px", fontWeight: 500, marginBottom: "8px", color: "var(--color-text-primary)" }}>✏️ القيم المعدّلة بالقواعد</div>
-                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "12px" }}>
-                  <tbody>
-                    {Object.entries(preview.modified_values).map(([fieldId, value]: [string, any], i: number) => {
-                      const field = activeVersion?.fields?.find((f: WorkflowField) => (f.register_field_id ?? `custom_${f.id}`) === fieldId);
-                      return (
-                        <tr key={i} style={{ borderBottom: "0.5px solid var(--color-border-tertiary)" }}>
-                          <td style={{ padding: "6px 0", color: "var(--color-text-secondary)" }}>
-                            {field?.label ?? fieldId}
-                            {field?.register_field_id === null && (
-                              <span style={{ fontSize: "9px", padding: "1px 4px", background: "var(--color-background-success)", color: "var(--color-text-success)", borderRadius: "3px", marginRight: "4px" }}>مخصص</span>
-                            )}
-                          </td>
-                          <td style={{ padding: "6px 0", textAlign: "left", fontWeight: 500, direction: "ltr" }}>
-                            {value ?? "—"}
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            )}
+            {/* Items Table */}
+            <div style={{ padding: "0" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: `${fontSize}px` }}>
+                <thead>
+                  <tr style={{ background: "var(--color-background-tertiary, #f8f9fa)", borderBottom: "1px solid var(--color-border-tertiary)" }}>
+                    <th style={{ padding: "10px 20px", textAlign: "right", fontWeight: 500, color: "var(--color-text-secondary)", fontSize: `${fontSize - 1}px` }}>البيان</th>
+                    <th style={{ padding: "10px 20px", textAlign: "left", fontWeight: 500, color: "var(--color-text-secondary)", fontSize: `${fontSize - 1}px`, width: "140px" }}>المبلغ (د.ع)</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {preview?.items?.map((item: any, i: number) => {
+                    const field = activeVersion?.fields?.find((f: WorkflowField) => (f.register_field_id ?? `custom_${f.id}`) === item.field_id);
+                    const label = field?.label ?? item.label ?? item.field_id;
+                    return (
+                      <tr key={i} style={{ borderBottom: "0.5px solid var(--color-border-tertiary)" }}>
+                        <td style={{ padding: "12px 20px", color: "var(--color-text-primary)" }}>
+                          {label}
+                        </td>
+                        <td style={{ padding: "12px 20px", textAlign: "left", fontWeight: 500, direction: "ltr", color: "var(--color-text-primary)", fontFamily: "monospace" }}>
+                          {Number(item.amount) > 0 ? Number(item.amount).toLocaleString("en-US", { minimumFractionDigits: 3 }) : item.text_value ?? "—"}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Total */}
+            <div
+              style={{
+                padding: "16px 20px",
+                background: "var(--color-background-success, #f0fdf4)",
+                borderTop: "2px solid var(--color-border-success, #22c55e)",
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+              }}
+            >
+              <span style={{ fontSize: `${fontSize + 2}px`, fontWeight: 600, color: "var(--color-text-primary)" }}>الإجمالي</span>
+              <span style={{ fontSize: `${fontSize + 4}px`, fontWeight: 700, direction: "ltr", color: "var(--color-text-success, #16a34a)", fontFamily: "monospace" }}>
+                {Number(preview?.total_amount ?? 0).toLocaleString("en-US", { minimumFractionDigits: 3 })} د.ع
+              </span>
+            </div>
+
+            {/* Modified Values (non-financial only) */}
+            {preview?.modified_values && (() => {
+              const financialFieldIds = new Set(preview.items?.map((item: any) => item.field_id) ?? []);
+              const nonFinancialEntries = Object.entries(preview.modified_values).filter(([fieldId]) => !financialFieldIds.has(fieldId));
+              if (nonFinancialEntries.length === 0) return null;
+              return (
+                <div style={{ padding: "16px 20px", borderTop: "1px solid var(--color-border-tertiary)" }}>
+                  <div style={{ fontSize: `${fontSize - 1}px`, fontWeight: 500, marginBottom: "10px", color: "var(--color-text-secondary)" }}>بيانات المعاملة</div>
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: `${fontSize}px` }}>
+                    <tbody>
+                      {nonFinancialEntries.map(([fieldId, value]: [string, any], i: number) => {
+                        const field = activeVersion?.fields?.find((f: WorkflowField) => (f.register_field_id ?? `custom_${f.id}`) === fieldId);
+                        return (
+                          <tr key={i} style={{ borderBottom: "0.5px solid var(--color-border-tertiary)" }}>
+                            <td style={{ padding: "8px 0", color: "var(--color-text-secondary)" }}>
+                              {field?.label ?? fieldId}
+                            </td>
+                            <td style={{ padding: "8px 0", textAlign: "left", fontWeight: 500, color: "var(--color-text-primary)" }}>
+                              {value ?? "—"}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              );
+            })()}
           </div>
 
+          {/* Notes */}
           <div style={{ marginBottom: "14px" }}>
             <label style={{ fontSize: "12px", color: "var(--color-text-secondary)", display: "block", marginBottom: "4px" }}>
               ملاحظات
@@ -813,6 +922,7 @@ export default function WorkflowExecutionPage() {
             />
           </div>
 
+          {/* Actions */}
           <div style={{ display: "flex", gap: "10px" }}>
             <button
               onClick={handleComplete}
@@ -826,11 +936,11 @@ export default function WorkflowExecutionPage() {
                 color: "var(--color-text-success)",
                 border: "0.5px solid var(--color-border-success)",
                 borderRadius: "var(--border-radius-md)",
-                cursor: "pointer",
+                cursor: completeMut.isPending ? "not-allowed" : "pointer",
                 fontFamily: "inherit",
               }}
             >
-              {completeMut.isPending ? "جارٍ الحفظ..." : "✓ إنشاء الوصل"}
+              {completeMut.isPending ? "جاري الحفظ..." : "✓ إنشاء الوصل"}
             </button>
             <button
               onClick={() => setIsReview(false)}

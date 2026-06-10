@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use App\Models\Register;
 use App\Models\ValidationRule;
 use Illuminate\Support\Facades\DB;
 
@@ -60,6 +61,9 @@ class ValidationEngine
             $result = match ($rule->validation_type) {
                 'duplicate_check' => $this->checkDuplicate($rule, $values),
                 'exists' => $this->checkExists($rule, $values),
+                'not_exists' => $this->checkNotExists($rule, $values),
+                'cross_register_check' => $this->checkCrossRegister($rule, $values, $context),
+                'dynamic_search' => $this->checkDynamicSearch($rule, $values, $context),
                 'multi_field' => $this->checkMultiField($rule, $values),
                 'register_search' => $this->checkRegisterSearch($rule, $values),
                 'query_builder' => $this->checkQueryBuilder($rule, $values),
@@ -173,6 +177,218 @@ class ValidationEngine
     }
 
     /**
+     * Not Exists Validation: Ensure value does NOT exist in target register.
+     *
+     * Opposite semantic of checkExists — clearly separated for readability.
+     */
+    protected function checkNotExists(ValidationRule $rule, array $values): bool
+    {
+        if (!$rule->target_register_id || empty($rule->target_fields)) {
+            return false;
+        }
+
+        $targetFields = $rule->target_fields;
+        $conditions = [];
+
+        foreach ($targetFields as $fieldConfig) {
+            $workflowFieldId = $fieldConfig['workflow_field_id'] ?? null;
+            $registerFieldName = $fieldConfig['register_field_name'] ?? null;
+            $value = $values[$workflowFieldId] ?? null;
+
+            if ($value === null || $registerFieldName === null) {
+                return false; // Can't validate, assume not exists (pass)
+            }
+
+            $conditions[] = [$registerFieldName, '=', (string) $value];
+        }
+
+        $query = DB::table('records')
+            ->where('register_id', $rule->target_register_id)
+            ->whereNull('deleted_at');
+
+        foreach ($conditions as $cond) {
+            $query->whereRaw("data->>? = ?", [$cond[0], $cond[2]]);
+        }
+
+        return $query->count() > 0; // Return true (failed) if FOUND
+    }
+
+    /**
+     * Cross Register Check: field-to-field match against a record in ANOTHER register.
+     *
+     * Distinct from exists/not_exists: this does not merely test presence. It locates a
+     * specific record in a foreign register by a lookup key, then asserts that one or more
+     * of the current values equal fields ON that matched record.
+     *
+     * Reading a foreign register is permission-gated (read-register-{code}); a caller without
+     * that permission fails the check. By security policy the end user is never told WHY the
+     * check failed — the rule's own error_message_ar is surfaced, identical to a data mismatch.
+     *
+     * Outcomes (true = failed / blocks per response_type):
+     *   - target register missing or inactive   → failed
+     *   - acting user lacks read permission      → failed
+     *   - lookup value empty                     → failed (no record can be located)
+     *   - no record matches the lookup key       → failed (required cross-reference absent)
+     *   - a compared field does not match        → failed
+     *   - record found AND every field matches   → passed
+     */
+    protected function checkCrossRegister(ValidationRule $rule, array $values, array $context): bool
+    {
+        $lookup = $rule->lookup_config ?? [];
+        $matchField = $lookup['match_field'] ?? null;
+        $matchWorkflowFieldId = $lookup['match_workflow_field_id'] ?? null;
+
+        if (!$rule->target_register_id || !$matchField || !$matchWorkflowFieldId || empty($rule->target_fields)) {
+            return true; // misconfigured — cannot assert the cross-reference, fail closed
+        }
+
+        $register = Register::find($rule->target_register_id);
+        if (!$register || !$register->is_active) {
+            return true;
+        }
+
+        // Permission gate: the acting user must be allowed to read this register.
+        // Fail closed on a missing user, a missing permission row, or a denied permission.
+        $user = $context['acting_user'] ?? null;
+        try {
+            $allowed = $user !== null && $user->hasPermissionTo("read-register-{$register->code}", 'api');
+        } catch (\Spatie\Permission\Exceptions\PermissionDoesNotExist) {
+            $allowed = false;
+        }
+        if (!$allowed) {
+            return true; // no reason leaked to the end user
+        }
+
+        // Locate the record in the foreign register by the lookup key.
+        $lookupValue = $values[$matchWorkflowFieldId] ?? null;
+        if ($lookupValue === null || $lookupValue === '') {
+            return true;
+        }
+
+        if (!$this->isValidFieldName($matchField)) {
+            throw new \InvalidArgumentException("Invalid match_field in cross_register_check: {$matchField}");
+        }
+
+        $record = DB::table('records')
+            ->where('register_id', $register->id)
+            ->whereNull('deleted_at')
+            ->whereRaw("data->>? = ?", [$matchField, (string) $lookupValue])
+            ->first();
+
+        if (!$record) {
+            return true; // no matching record — required cross-reference absent
+        }
+
+        $recordData = is_string($record->data) ? json_decode($record->data, true) : ($record->data ?? []);
+        $recordData = is_array($recordData) ? $recordData : [];
+
+        // Field-to-field comparison against the matched record.
+        foreach ($rule->target_fields as $fieldConfig) {
+            $workflowFieldId = $fieldConfig['workflow_field_id'] ?? null;
+            $registerFieldName = $fieldConfig['register_field_name'] ?? null;
+            $operator = $fieldConfig['operator'] ?? '=';
+
+            if ($workflowFieldId === null || $registerFieldName === null) {
+                return true; // incomplete mapping — fail closed
+            }
+
+            $currentValue = $values[$workflowFieldId] ?? null;
+            $recordValue = $recordData[$registerFieldName] ?? null;
+
+            if (!$this->compareValues($currentValue, $operator, $recordValue)) {
+                return true; // mismatch — failed
+            }
+        }
+
+        return false; // record found and every field matched — passed
+    }
+
+    /**
+     * Dynamic Search: existence-based check against a single register field.
+     *
+     * Distinct case from exists/not_exists/cross_register_check for clarity
+     * in a government system where readability equals functional correctness.
+     *
+     * lookup_config:
+     *   - search_field: json key inside records.data
+     *   - search_workflow_field_id: workflow field that provides the search value
+     *
+     * expectation:
+     *   - must_exist:   record MUST be found → passed, not found → failed
+     *   - must_not_exist: record MUST NOT be found → passed, found → failed
+     *
+     * Permission gate: read-register-{code} required; fail-closed.
+     * Null/empty search value → failed (no search possible).
+     */
+    protected function checkDynamicSearch(ValidationRule $rule, array $values, array $context): bool
+    {
+        $lookup = $rule->lookup_config ?? [];
+        $searchField = $lookup['search_field'] ?? null;
+        $searchWorkflowFieldId = $lookup['search_workflow_field_id'] ?? null;
+        $expectation = $rule->expectation ?? null;
+
+        if (!$rule->target_register_id || !$searchField || !$searchWorkflowFieldId || !$expectation) {
+            return true; // misconfigured — fail closed
+        }
+
+        $register = Register::find($rule->target_register_id);
+        if (!$register || !$register->is_active) {
+            return true; // register missing or inactive — fail closed
+        }
+
+        // Permission gate: the acting user must be allowed to read this register.
+        // Fail closed on a missing user, a missing permission row, or a denied permission.
+        $user = $context['acting_user'] ?? null;
+        try {
+            $allowed = $user !== null && $user->hasPermissionTo("read-register-{$register->code}", 'api');
+        } catch (\Spatie\Permission\Exceptions\PermissionDoesNotExist) {
+            $allowed = false;
+        }
+        if (!$allowed) {
+            return true; // no reason leaked to the end user
+        }
+
+        // Resolve search value from submitted values.
+        $searchValue = $values[$searchWorkflowFieldId] ?? null;
+        if ($searchValue === null || $searchValue === '') {
+            return true; // null search value — cannot perform search, fail closed
+        }
+
+        if (!$this->isValidFieldName($searchField)) {
+            throw new \InvalidArgumentException("Invalid search_field in dynamic_search: {$searchField}");
+        }
+
+        $recordExists = DB::table('records')
+            ->where('register_id', $register->id)
+            ->whereNull('deleted_at')
+            ->whereRaw("data->>? = ?", [$searchField, (string) $searchValue])
+            ->exists();
+
+        return match ($expectation) {
+            'must_exist' => !$recordExists,     // true (failed) when NOT found
+            'must_not_exist' => $recordExists,  // true (failed) when found
+            default => true,                     // unknown expectation — fail closed
+        };
+    }
+
+    /**
+     * Compare two scalar values with a whitelisted operator.
+     * Equality operators compare as strings; ordering operators compare numerically.
+     */
+    protected function compareValues($left, string $operator, $right): bool
+    {
+        return match ($operator) {
+            '=' => (string) $left === (string) $right,
+            '!=' => (string) $left !== (string) $right,
+            '>' => (float) $left > (float) $right,
+            '>=' => (float) $left >= (float) $right,
+            '<' => (float) $left < (float) $right,
+            '<=' => (float) $left <= (float) $right,
+            default => throw new \InvalidArgumentException("Unsupported operator in cross_register_check: {$operator}"),
+        };
+    }
+
+    /**
      * Multi Field Validation: Check multiple fields together.
      */
     protected function checkMultiField(ValidationRule $rule, array $values): bool
@@ -241,18 +457,20 @@ class ValidationEngine
                             $value = $values[$matches[1]] ?? $value;
                         }
 
-                        $jsonField = "data->>{$field}";
+                        if (!$this->isValidFieldName($field)) {
+                            throw new \InvalidArgumentException("Invalid field name in query condition: {$field}");
+                        }
 
                         match ($op) {
-                            '=' => $q->whereRaw("$jsonField = ?", [$value], $operator === 'or' ? 'or' : 'and'),
-                            '!=' => $q->whereRaw("$jsonField != ?", [$value], $operator === 'or' ? 'or' : 'and'),
-                            '>' => $q->whereRaw("$jsonField > ?", [$value], $operator === 'or' ? 'or' : 'and'),
-                            '>=' => $q->whereRaw("$jsonField >= ?", [$value], $operator === 'or' ? 'or' : 'and'),
-                            '<' => $q->whereRaw("$jsonField < ?", [$value], $operator === 'or' ? 'or' : 'and'),
-                            '<=' => $q->whereRaw("$jsonField <= ?", [$value], $operator === 'or' ? 'or' : 'and'),
-                            'like' => $q->whereRaw("$jsonField like ?", ["%{$value}%"], $operator === 'or' ? 'or' : 'and'),
+                            '=' => $q->whereRaw("data->>? = ?", [$field, $value], $operator === 'or' ? 'or' : 'and'),
+                            '!=' => $q->whereRaw("data->>? != ?", [$field, $value], $operator === 'or' ? 'or' : 'and'),
+                            '>' => $q->whereRaw("data->>? > ?", [$field, $value], $operator === 'or' ? 'or' : 'and'),
+                            '>=' => $q->whereRaw("data->>? >= ?", [$field, $value], $operator === 'or' ? 'or' : 'and'),
+                            '<' => $q->whereRaw("data->>? < ?", [$field, $value], $operator === 'or' ? 'or' : 'and'),
+                            '<=' => $q->whereRaw("data->>? <= ?", [$field, $value], $operator === 'or' ? 'or' : 'and'),
+                            'like' => $q->whereRaw("data->>? like ?", [$field, "%{$value}%"], $operator === 'or' ? 'or' : 'and'),
                             'in' => $q->whereIn($field, is_array($value) ? $value : json_decode($value, true) ?? [], $operator === 'or' ? 'or' : 'and'),
-                            default => $q->whereRaw("$jsonField = ?", [$value], $operator === 'or' ? 'or' : 'and'),
+                            default => $q->whereRaw("data->>? = ?", [$field, $value], $operator === 'or' ? 'or' : 'and'),
                         };
                     }
                 }
@@ -318,6 +536,9 @@ class ValidationEngine
     }
 
     /**
+     * @deprecated Use WorkflowRoutingEngine instead.
+     *             Mixes validation with routing — will be removed in Phase 7 refactor.
+     *
      * Field Existence Check: Field-aware lookup with workflow routing.
      *
      * Returns routing decision instead of simple pass/fail.
@@ -532,5 +753,13 @@ class ValidationEngine
             'failed_count' => count(array_filter($results, fn($r) => $r['status'] === 'failed')),
             'results' => $results,
         ];
+    }
+
+    /**
+     * Validate that a field name contains only safe characters.
+     */
+    protected function isValidFieldName(string $field): bool
+    {
+        return (bool) preg_match('/^[a-zA-Z0-9_-]+$/', $field);
     }
 }

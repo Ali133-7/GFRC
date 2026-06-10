@@ -42,15 +42,17 @@ export type ConditionNode = SimpleCondition | ConditionGroup;
 
 export type ActionType =
   | 'set_value' | 'override_value' | 'calculate' | 'set_fee' | 'apply_discount'
+  | 'show' | 'hide' | 'enable' | 'disable'
   | 'set_visibility' | 'set_required' | 'set_optional' | 'set_readonly'
   | 'set_editable' | 'set_lock' | 'unlock' | 'set_options' | 'append_options'
   | 'remove_options' | 'set_field_type' | 'clear_value' | 'copy_value'
   | 'route_to_step' | 'route_to_workflow' | 'switch_mode'
   | 'pause_execution' | 'resume_execution' | 'skip_step'
-  | 'send_notification' | 'create_task' | 'assign_user' | 'assign_role'
   | 'execute_validation' | 'show_message' | 'show_warning' | 'show_error'
-  | 'show_confirmation' | 'generate_reference' | 'create_record'
-  | 'update_record' | 'delete_record' | 'audit_log';
+  | 'show_confirmation' | 'generate_reference' | 'audit_log';
+  // TODO: Phase 2 — Workflow Administration Actions (not implemented)
+  // | 'send_notification' | 'create_task' | 'assign_user' | 'assign_role'
+  // | 'create_record' | 'update_record' | 'delete_record';
 
 export interface RuleAction {
   id: string;
@@ -288,6 +290,10 @@ export const ACTION_METADATA: ActionMetadata[] = [
   { value: 'calculate', label: 'حساب', label_en: 'Calculate', icon: '🔢', category: 'field', requires_field: true, requires_value: true, description_ar: 'حساب قيمة بصيغة' },
   { value: 'set_fee', label: 'تعيين رسوم', label_en: 'Set Fee', icon: '💰', category: 'financial', requires_value: true, description_ar: 'تعيين رسوم' },
   { value: 'apply_discount', label: 'تطبيق خصم', label_en: 'Apply Discount', icon: '🏷️', category: 'financial', requires_value: true, description_ar: 'تطبيق نسبة خصم' },
+  { value: 'show', label: 'إظهار', label_en: 'Show', icon: '👁️', category: 'field', requires_field: true, description_ar: 'إظهار حقل' },
+  { value: 'hide', label: 'إخفاء', label_en: 'Hide', icon: '🙈', category: 'field', requires_field: true, description_ar: 'إخفاء حقل' },
+  { value: 'enable', label: 'تفعيل', label_en: 'Enable', icon: '✓', category: 'field', requires_field: true, description_ar: 'تفعيل حقل' },
+  { value: 'disable', label: 'تعطيل', label_en: 'Disable', icon: '✗', category: 'field', requires_field: true, description_ar: 'تعطيل حقل' },
   { value: 'set_visibility', label: 'إظهار/إخفاء', label_en: 'Set Visibility', icon: '👁️', category: 'field', requires_field: true, requires_value: true, description_ar: 'إظهار أو إخفاء حقل' },
   { value: 'set_required', label: 'تعيين مطلوب', label_en: 'Set Required', icon: '⭐', category: 'field', requires_field: true, description_ar: 'تعيين الحقل كإلزامي' },
   { value: 'set_optional', label: 'تعيين اختياري', label_en: 'Set Optional', icon: '○', category: 'field', requires_field: true, description_ar: 'تعيين الحقل كاختياري' },
@@ -307,18 +313,15 @@ export const ACTION_METADATA: ActionMetadata[] = [
   { value: 'pause_execution', label: 'إيقاف مؤقت', label_en: 'Pause Execution', icon: '⏸️', category: 'control', description_ar: 'إيقاف التنفيذ مؤقتاً' },
   { value: 'resume_execution', label: 'استئناف', label_en: 'Resume Execution', icon: '▶️', category: 'control', description_ar: 'استئناف التنفيذ' },
   { value: 'skip_step', label: 'تخطي خطوة', label_en: 'Skip Step', icon: '⏭️', category: 'routing', requires_step: true, description_ar: 'تخطي خطوة' },
-  { value: 'send_notification', label: 'إرسال إشعار', label_en: 'Send Notification', icon: '🔔', category: 'notification', requires_value: true, description_ar: 'إرسال إشعار' },
-  { value: 'create_task', label: 'إنشاء مهمة', label_en: 'Create Task', icon: '📝', category: 'notification', requires_value: true, description_ar: 'إنشاء مهمة جديدة' },
-  { value: 'assign_user', label: 'تعيين مستخدم', label_en: 'Assign User', icon: '👤', category: 'notification', requires_value: true, description_ar: 'تعيين مستخدم للمهمة' },
-  { value: 'assign_role', label: 'تعيين دور', label_en: 'Assign Role', icon: '👥', category: 'notification', requires_value: true, description_ar: 'تعيين دور للمهمة' },
+  { value: 'generate_reference', label: 'توليد مرجع', label_en: 'Generate Reference', icon: '🔖', category: 'data', description_ar: 'توليد رقم مرجعي للإيصال' },
   { value: 'execute_validation', label: 'تنفيذ تحقق', label_en: 'Execute Validation', icon: '✅', category: 'validation', requires_value: true, description_ar: 'تنفيذ قاعدة تحقق' },
   { value: 'show_message', label: 'عرض رسالة', label_en: 'Show Message', icon: '💬', category: 'ui', requires_value: true, description_ar: 'عرض رسالة للمستخدم' },
   { value: 'show_warning', label: 'عرض تحذير', label_en: 'Show Warning', icon: '⚠️', category: 'ui', requires_value: true, description_ar: 'عرض تحذير' },
   { value: 'show_error', label: 'عرض خطأ', label_en: 'Show Error', icon: '🚫', category: 'ui', requires_value: true, description_ar: 'عرض رسالة خطأ' },
   { value: 'show_confirmation', label: 'طلب تأكيد', label_en: 'Show Confirmation', icon: '❓', category: 'ui', requires_value: true, description_ar: 'طلب تأكيد من المستخدم' },
-  { value: 'generate_reference', label: 'توليد مرجع', label_en: 'Generate Reference', icon: '🔖', category: 'data', description_ar: 'توليد رقم مرجعي' },
-  { value: 'create_record', label: 'إنشاء سجل', label_en: 'Create Record', icon: '📁', category: 'data', description_ar: 'إنشاء سجل جديد' },
-  { value: 'update_record', label: 'تحديث سجل', label_en: 'Update Record', icon: '📝', category: 'data', description_ar: 'تحديث سجل موجود' },
-  { value: 'delete_record', label: 'حذف سجل', label_en: 'Delete Record', icon: '🗑️', category: 'data', description_ar: 'حذف سجل' },
+  // TODO: Phase 2 — Workflow Administration Actions (not implemented)
+  // { value: 'create_record', label: 'إنشاء سجل', label_en: 'Create Record', icon: '📁', category: 'data', description_ar: 'إنشاء سجل جديد' },
+  // { value: 'update_record', label: 'تحديث سجل', label_en: 'Update Record', icon: '📝', category: 'data', description_ar: 'تحديث سجل موجود' },
+  // { value: 'delete_record', label: 'حذف سجل', label_en: 'Delete Record', icon: '🗑️', category: 'data', description_ar: 'حذف سجل' },
   { value: 'audit_log', label: 'تدوين', label_en: 'Audit Log', icon: '📜', category: 'data', requires_value: true, description_ar: 'تسجيل عملية في سجل التدقيق' },
 ];

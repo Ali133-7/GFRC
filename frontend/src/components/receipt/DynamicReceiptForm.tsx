@@ -4,6 +4,7 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { RegisterField } from "@/types/register";
 import { formatCurrency } from "@/utils/formatCurrency";
+import { GovSelect } from "@/components/ui/GovSelect";
 
 interface DynamicReceiptFormProps {
   fields: RegisterField[];
@@ -119,14 +120,17 @@ export default function DynamicReceiptForm({
                     );
                   case "select":
                     return (
-                      <select {...f} disabled={disabled} style={inputStyle(!!errors[field.name])}>
-                        <option value="">— اختر —</option>
-                        {(field.options ?? []).map((opt, idx) => {
-                          const val = typeof opt === 'string' ? opt : opt.value;
-                          const label = typeof opt === 'string' ? opt : opt.label_ar;
-                          return <option key={val ?? idx} value={val}>{label}</option>;
-                        })}
-                      </select>
+                      <GovSelect
+                        name={f.name}
+                        value={f.value}
+                        onChange={f.onChange}
+                        options={(field.options ?? []).map((opt) => ({
+                          value: typeof opt === 'string' ? opt : opt.value,
+                          label: typeof opt === 'string' ? opt : opt.label_ar,
+                        }))}
+                        placeholder="— اختر —"
+                        disabled={disabled}
+                      />
                     );
                   case "textarea":
                     return (

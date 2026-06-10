@@ -12,7 +12,7 @@ class RegisterService
     public function create(array $data, string $userId): Register
     {
         return DB::transaction(function () use ($data, $userId) {
-            return Register::create([
+            $register = Register::create([
                 'id' => (string) Str::uuid(),
                 'code' => $data['code'],
                 'name_ar' => $data['name_ar'],
@@ -22,7 +22,28 @@ class RegisterService
                 'fiscal_year' => $data['fiscal_year'],
                 'created_by' => $userId,
             ]);
+
+            $this->grantReadPermission($register);
+
+            return $register;
         });
+    }
+
+    /**
+     * Create the per-register read permission used to gate cross_register_check, and
+     * grant it to super_admin (no Gate::before bypass exists). Other roles obtain it
+     * on demand via the admin UI / a separate seeder — not automatically.
+     */
+    protected function grantReadPermission(Register $register): void
+    {
+        $permission = \App\Models\Permission::firstOrCreate(
+            ['name' => "read-register-{$register->code}", 'guard_name' => 'api']
+        );
+
+        \App\Models\Role::where('name', 'super_admin')
+            ->where('guard_name', 'api')
+            ->first()
+            ?->givePermissionTo($permission);
     }
 
     public function update(Register $register, array $data): Register
