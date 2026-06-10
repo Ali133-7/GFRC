@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers\Api\V1;
 
+use App\Models\FeeVersion;
 use App\Models\OfficialFee;
 use App\Models\OfficialFeeCategory;
 use Illuminate\Http\JsonResponse;
@@ -47,6 +48,17 @@ class OfficialFeeController extends ApiController
 
         $data['id'] = (string) Str::uuid();
         $fee = OfficialFee::create($data);
+
+        // The execution engine resolves fees from fee_versions, so every fee must have a
+        // version. Without this, set_fee/FeeEngine find no active version and fail.
+        FeeVersion::create([
+            'fee_id' => $fee->id,
+            'version' => 1,
+            'amount' => $data['amount'],
+            'effective_from' => $data['effective_from'] ?? now(),
+            'effective_to' => $data['effective_to'] ?? null,
+        ]);
+
         return $this->success($fee->load('category'), 'تم إضافة الرسم بنجاح');
     }
 
@@ -73,6 +85,23 @@ class OfficialFeeController extends ApiController
         ]);
 
         $fee->update($data);
+
+        // Keep the engine's source of truth (fee_versions) in sync with the edited amount.
+        if (array_key_exists('amount', $data)) {
+            $version = $fee->feeVersions()->orderByDesc('version')->first();
+            if ($version) {
+                $version->update(['amount' => $data['amount']]);
+            } else {
+                FeeVersion::create([
+                    'fee_id' => $fee->id,
+                    'version' => 1,
+                    'amount' => $data['amount'],
+                    'effective_from' => $data['effective_from'] ?? now(),
+                    'effective_to' => $data['effective_to'] ?? null,
+                ]);
+            }
+        }
+
         return $this->success($fee->load('category'), 'تم تحديث الرسم بنجاح');
     }
 

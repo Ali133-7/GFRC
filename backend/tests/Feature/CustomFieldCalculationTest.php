@@ -204,7 +204,7 @@ class CustomFieldCalculationTest extends TestCase
         $this->assertEquals('discount', $trace1['step']);
         $this->assertEquals($amountFieldId, $trace1['field_id']);
         $this->assertEquals('percentage', $trace1['type']);
-        $this->assertEquals('10.0', $trace1['value']);
+        $this->assertEquals('10.000', $trace1['value']);
         $this->assertEquals('15.500', $trace1['applied_to']);
         $this->assertEquals('13.950', $trace1['result']);
 

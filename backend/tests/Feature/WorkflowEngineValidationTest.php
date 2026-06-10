@@ -1287,7 +1287,7 @@ class WorkflowEngineValidationTest extends TestCase
     // 8. EDGE CASE TESTING
     // ============================================================
 
-    public function test_submit_same_step_twice_accumulates(): void
+    public function test_submit_same_step_twice_updates_not_accumulates(): void
     {
         $workflow = $this->createWorkflow();
         $version = $this->createWorkflowVersion($workflow);
@@ -1305,8 +1305,10 @@ class WorkflowEngineValidationTest extends TestCase
             ->get();
         $this->assertCount(2, $events);
 
+        // Re-submitting the same step must reflect the LATEST value (200), not accumulate
+        // (100 + 200 = 300). Accumulating on every correction is the double-counting bug.
         $execution->refresh();
-        $this->assertEquals('300.000', $execution->total_amount);
+        $this->assertEquals('200.000', $execution->total_amount);
     }
 
     public function test_submit_steps_out_of_order_advances_correctly(): void

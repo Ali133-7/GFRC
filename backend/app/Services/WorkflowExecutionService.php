@@ -179,7 +179,8 @@ class WorkflowExecutionService
                 if ($r['status'] === 'failed' && ($r['response_type'] ?? '') === 'warning') {
                     $legacyWarnings[] = $r;
                 }
-                if (($r['status'] ?? '') === 'found' && ($r['decision'] ?? '') !== 'continue_workflow') {
+                // Routing decisions come from field_existence_check with status 'found'
+                if (($r['status'] ?? '') === 'found' && !empty($r['decision']) && $r['decision'] !== 'continue_workflow') {
                     $legacyRouting[] = $r;
                 }
             }
@@ -316,6 +317,13 @@ class WorkflowExecutionService
             $calculatedItems = $this->calculateItems($visibleFields, $modifiedValues, $allActions, $fields);
             $stepTotal = $this->sumItems($calculatedItems);
 
+            // The execution total is the sum of the DEDUPLICATED items (one per field), not an
+            // accumulation of per-step totals — rules re-fire on every step and re-submitting a
+            // step must update, never double-count.
+            $mergedItems = array_merge($execution->calculated_items ?? [], $calculatedItems);
+            $uniqueItems = $this->deduplicateItemsByFieldId($mergedItems);
+            $newTotal = $this->ctx->normalize($this->sumItems($uniqueItems));
+
             // Build detailed financial trace from the rule engine (step-by-step transformations)
             $financialTrace = $enterpriseResult['financial_trace'] ?? [];
 
@@ -339,10 +347,6 @@ class WorkflowExecutionService
 
             // Insurance snapshots
             $insuranceSnapshots = $this->insuranceEngine->collectInsuranceSnapshots($visibleFields, $modifiedValues);
-
-            // Compute new total from event stream (not from cached value)
-            $replayedState = $this->replayExecutionState($execution->id);
-            $newTotal = bcadd($replayedState['total_amount'], $stepTotal, $this->ctx->scale());
 
             $nextStepIndex = $this->findNextVisibleStep($version, $stepIndex + 1, $modifiedValues);
 
@@ -373,11 +377,8 @@ class WorkflowExecutionService
                 causedBy: $execution->started_by,
             );
 
-            // Update denormalized cache (not source of truth)
-            // CRITICAL: Deduplicate items by field_id to prevent double-counting
-            $mergedItems = array_merge($execution->calculated_items ?? [], $calculatedItems);
-            $uniqueItems = $this->deduplicateItemsByFieldId($mergedItems);
-            
+            // Update denormalized cache (not source of truth). Items are deduplicated by
+            // field_id (computed above) so the cached list matches the total exactly.
             $updateData = [
                 'current_step_index' => $nextStepIndex,
                 'values_snapshot' => $modifiedValues,
@@ -692,8 +693,68 @@ class WorkflowExecutionService
             // Link execution to receipt
             $execution->update(['receipt_id' => $receipt->id]);
 
+            // Create record in the target register for duplicate checking
+            $this->createRecordInRegister($execution, $version, $modifiedValues ?? $execution->values_snapshot);
+
             return $receipt->load('items');
         });
+    }
+
+    /**
+     * Create a record in the target register after workflow completion.
+     * This enables duplicate checking validation rules to work correctly.
+     */
+    protected function createRecordInRegister(WorkflowExecution $execution, $version, array $values): void
+    {
+        $workflow = $version->workflow;
+        if (!$workflow || !$workflow->register_id) {
+            return;
+        }
+
+        // Build record data from execution values
+        // Map field IDs to register field names for the record data
+        $recordData = [];
+        $fields = $version->fields;
+        
+        foreach ($values as $fieldId => $value) {
+            // Find the workflow field by ID or canonical key
+            $field = $fields->first(function ($f) use ($fieldId) {
+                return $f->id === $fieldId 
+                    || $f->register_field_id === $fieldId 
+                    || ('custom_' . $f->id) === $fieldId;
+            });
+
+            if ($field) {
+                // Use register_field_id as the key if available, otherwise use custom_<id>
+                $key = $field->register_field_id ?? ('custom_' . $field->id);
+                
+                // If we have the register field, use its name
+                if ($field->registerField) {
+                    $key = $field->registerField->name;
+                }
+                
+                $recordData[$key] = $value;
+            }
+        }
+
+        // Create the record
+        DB::table('records')->insert([
+            'id' => (string) \Illuminate\Support\Str::uuid(),
+            'register_id' => $workflow->register_id,
+            'record_number' => null, // Can be set later if needed
+            'data' => json_encode($recordData, JSON_UNESCAPED_UNICODE),
+            'created_by' => $execution->started_by,
+            'updated_by' => $execution->started_by,
+            'created_at' => now(),
+            'updated_at' => now(),
+            'deleted_at' => null,
+        ]);
+
+        \Log::info('Record created in register after workflow completion', [
+            'execution_id' => $execution->id,
+            'register_id' => $workflow->register_id,
+            'record_data_keys' => array_keys($recordData),
+        ]);
     }
 
     /**
@@ -765,6 +826,11 @@ class WorkflowExecutionService
             };
         }
 
+        // Total is the sum of the deduplicated items (one per field, last write wins) — the
+        // same rule the live path uses, so cached and replayed totals always agree.
+        $state['calculated_items'] = $this->deduplicateItemsByFieldId($state['calculated_items']);
+        $state['total_amount'] = $this->ctx->normalize($this->sumItems($state['calculated_items']));
+
         return $state;
     }
 
@@ -788,9 +854,8 @@ class WorkflowExecutionService
         if (!empty($newItems)) {
             $state['calculated_items'] = array_merge($state['calculated_items'], $newItems);
         }
-
-        $stepTotal = $payload['step_total'] ?? '0';
-        $state['total_amount'] = bcadd($state['total_amount'], $stepTotal, $this->ctx->scale());
+        // Total is finalized in replayExecutionState() as sum of deduplicated items — do NOT
+        // accumulate per-step totals here (rules re-fire each step and would double-count).
     }
 
     protected function applyExecutionCompleted(array &$state, array $event): void
@@ -1563,30 +1628,23 @@ class WorkflowExecutionService
      */
     protected function deduplicateItemsByFieldId(array $items): array
     {
-        $uniqueItems = [];
-        $seenKeys = [];
-        
+        // Collapse re-applications of the same charge, LAST write wins — so re-submitting a
+        // step (or rules that re-fire on every step) update a field instead of double-counting.
+        // A field may legitimately carry several DISTINCT fees (different fee_codes), so fee
+        // items are keyed by field_id + fee_code; non-fee items are keyed by field_id alone.
+        $byKey = [];
+        $noField = [];
         foreach ($items as $item) {
             $fieldId = $item['field_id'] ?? null;
+            if ($fieldId === null) {
+                $noField[] = $item;
+                continue;
+            }
             $feeCode = $item['fee_code'] ?? null;
-            
-            // Create a unique key based on field_id and fee_code
-            // If no fee_code, use field_id + amount to allow multiple different amounts
-            if ($feeCode) {
-                $key = $fieldId . '|' . $feeCode;
-            } else {
-                $amount = $item['amount'] ?? '0';
-                $key = $fieldId . '|' . $amount;
-            }
-            
-            // If not seen before, add it
-            if (!isset($seenKeys[$key])) {
-                $uniqueItems[] = $item;
-                $seenKeys[$key] = true;
-            }
-            // Skip duplicates
+            $key = ($feeCode !== null && $feeCode !== '') ? $fieldId . '|' . $feeCode : $fieldId;
+            $byKey[$key] = $item;
         }
-        
-        return $uniqueItems;
+
+        return array_merge(array_values($byKey), $noField);
     }
 }

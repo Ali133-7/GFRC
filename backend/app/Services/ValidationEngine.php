@@ -24,14 +24,32 @@ class ValidationEngine
             ->orderBy('sort_order')
             ->get();
 
+        \Log::info('ValidationEngine::validate - Starting validation', [
+            'workflow_version_id' => $workflowVersionId,
+            'rules_count' => $rules->count(),
+            'values_keys' => array_keys($values),
+        ]);
+
         $results = [];
         $hasError = false;
         $hasWarning = false;
         $needsConfirmation = false;
 
         foreach ($rules as $rule) {
+            \Log::info('ValidationEngine::validate - Processing rule', [
+                'rule_id' => $rule->id,
+                'rule_name' => $rule->name,
+                'validation_type' => $rule->validation_type,
+            ]);
+
             $result = $this->runValidation($rule, $values, $context);
             $results[] = $result;
+
+            \Log::info('ValidationEngine::validate - Rule result', [
+                'rule_id' => $rule->id,
+                'rule_name' => $rule->name,
+                'status' => $result['status'],
+            ]);
 
             if ($result['status'] === 'failed') {
                 if ($rule->isError()) {
@@ -112,18 +130,43 @@ class ValidationEngine
     protected function checkDuplicate(ValidationRule $rule, array $values): bool
     {
         if (!$rule->target_register_id || empty($rule->target_fields)) {
+            \Log::warning('checkDuplicate: Missing target_register_id or target_fields', [
+                'rule_id' => $rule->id,
+                'target_register_id' => $rule->target_register_id,
+                'target_fields' => $rule->target_fields,
+            ]);
             return false;
         }
 
         $targetFields = $rule->target_fields;
         $conditions = [];
 
+        \Log::info('checkDuplicate: Starting validation', [
+            'rule_id' => $rule->id,
+            'rule_name' => $rule->name,
+            'target_register_id' => $rule->target_register_id,
+            'target_fields_count' => count($targetFields),
+            'values_keys' => array_keys($values),
+        ]);
+
         foreach ($targetFields as $fieldConfig) {
             $workflowFieldId = $fieldConfig['workflow_field_id'] ?? null;
             $registerFieldName = $fieldConfig['register_field_name'] ?? null;
             $value = $values[$workflowFieldId] ?? null;
 
+            \Log::info('checkDuplicate: Processing field', [
+                'workflow_field_id' => $workflowFieldId,
+                'register_field_name' => $registerFieldName,
+                'value_found' => $value,
+                'value_in_values' => isset($values[$workflowFieldId]),
+            ]);
+
             if ($value === null || $registerFieldName === null) {
+                \Log::warning('checkDuplicate: Missing value or register_field_name', [
+                    'workflow_field_id' => $workflowFieldId,
+                    'registerFieldName' => $registerFieldName,
+                    'value' => $value,
+                ]);
                 return false; // Can't validate without all values
             }
 
@@ -138,7 +181,16 @@ class ValidationEngine
             $query->whereRaw("data->>? = ?", [$cond[0], $cond[2]]);
         }
 
-        return $query->count() > 0;
+        $count = $query->count();
+        
+        \Log::info('checkDuplicate: Query result', [
+            'count' => $count,
+            'conditions' => $conditions,
+            'sql' => $query->toSql(),
+            'bindings' => $query->getBindings(),
+        ]);
+
+        return $count > 0;
     }
 
     /**

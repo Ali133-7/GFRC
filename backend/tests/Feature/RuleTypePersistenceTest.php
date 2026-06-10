@@ -169,4 +169,42 @@ class RuleTypePersistenceTest extends TestCase
         $this->assertCount(1, $clonedCase['cases'], 'cloned case_based rule lost its cases');
         $this->assertEquals('f1', $clonedCase['trigger_field_id']);
     }
+
+    public function test_clone_remaps_custom_field_references_in_rules(): void
+    {
+        // A custom field is keyed custom_<workflow_field.id>, and that id changes on clone.
+        $customField = \App\Models\WorkflowField::create([
+            'workflow_version_id' => $this->verId,
+            'register_field_id' => null,
+            'custom_name' => 'category',
+            'custom_label' => 'الفئة',
+            'field_type' => 'select',
+            'options' => [['label' => 'ممتاز', 'value' => 'ممتاز']],
+            'is_visible' => true,
+        ]);
+        $oldKey = 'custom_' . $customField->id;
+
+        \App\Models\WorkflowRule::create([
+            'workflow_version_id' => $this->verId,
+            'name' => 'cat rule',
+            'rule_type' => 'case_based',
+            'trigger_field_id' => $oldKey,
+            'cases' => [['value' => 'ممتاز', 'actions' => [['action' => 'set_value', 'target_field_id' => $oldKey, 'value' => 'x']]]],
+            'condition_logic' => ['operator' => 'and', 'conditions' => []],
+            'actions' => [],
+            'is_active' => true,
+        ]);
+
+        $cloned = $this->actingAsAdmin()
+            ->postJson("/api/v1/workflows/{$this->wfId}/versions/{$this->verId}/clone")
+            ->assertSuccessful()->json('data');
+
+        $clonedCustom = collect($cloned['fields'])->firstWhere('custom_name', 'category');
+        $clonedRule = collect($cloned['rules'])->firstWhere('name', 'cat rule');
+        $newKey = 'custom_' . $clonedCustom['id'];
+
+        $this->assertNotEquals($oldKey, $newKey, 'cloned custom field should have a new id');
+        $this->assertEquals($newKey, $clonedRule['trigger_field_id'], 'clone did not remap the case trigger to the new custom field id');
+        $this->assertEquals($newKey, $clonedRule['cases'][0]['actions'][0]['target_field_id'], 'clone did not remap the case action target');
+    }
 }

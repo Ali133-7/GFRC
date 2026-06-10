@@ -899,6 +899,35 @@ class EnterpriseRuleEngine
                         // code itself is stored in `value`. This prevents using a fee AMOUNT
                         // (e.g. "25000.000") as a code.
                         $feeCode = (string) (!empty($action['fee_code']) ? $action['fee_code'] : ($value ?? ''));
+                        
+                        // Check if value is a numeric amount (not a fee code)
+                        $isNumericAmount = is_numeric($value) && empty($action['fee_code']);
+                        
+                        if ($isNumericAmount) {
+                            // Direct amount assignment - no fee lookup needed
+                            $amount = $this->toDecimalString($value);
+                            $finalValues[$fieldId] = $amount;
+                            $executed[] = $action['id'] ?? $actionType;
+                            $fieldEffects[] = [
+                                'field_id' => $fieldId,
+                                'action' => 'set_fee',
+                                'fee_code' => null,
+                                'amount' => $amount,
+                                'fee_version_id' => null,
+                                'fee_name' => 'مبلغ مباشر',
+                            ];
+                            $financialTrace[] = [
+                                'step' => 'fee_resolution',
+                                'field_id' => $fieldId,
+                                'fee_code' => null,
+                                'fee_version_id' => null,
+                                'base_amount' => $amount,
+                                'formula' => null,
+                                'result' => $amount,
+                            ];
+                            break;
+                        }
+                        
                         if ($feeCode === '') {
                             break;
                         }
@@ -1297,7 +1326,7 @@ class EnterpriseRuleEngine
     }
 
     /**
-     * Convert any value to a BC-safe decimal string.
+     * Convert any value to a BC-safe decimal string with proper scale (3 decimal places).
      * Never uses float arithmetic.
      */
     protected function toDecimalString(mixed $value): string
@@ -1305,24 +1334,22 @@ class EnterpriseRuleEngine
         if (is_string($value)) {
             $value = trim($value);
             if (is_numeric($value)) {
-                if (str_contains($value, '.')) {
-                    return $value;
-                }
-                return $value . '.0';
+                // Use bcadd to normalize to 3 decimal places
+                return bcadd($value, '0', 3);
             }
-            return '0.0';
+            return '0.000';
         }
         if (is_int($value)) {
-            return (string) $value . '.0';
+            return bcadd((string) $value, '0', 3);
         }
         if (is_float($value)) {
             $str = rtrim(rtrim(number_format($value, 10, '.', ''), '0'), '.');
             if (!str_contains($str, '.')) {
                 $str .= '.0';
             }
-            return $str;
+            return bcadd($str, '0', 3);
         }
-        return '0.0';
+        return '0.000';
     }
 
     /**

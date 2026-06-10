@@ -48,107 +48,7 @@ class WorkflowVersionController extends ApiController
         // Clone all data from source version if one exists
         if ($sourceVersion) {
             DB::transaction(function () use ($sourceVersion, $version) {
-                // Clone steps with ID remapping
-                $stepMap = [];
-                foreach ($sourceVersion->steps as $step) {
-                    $newStep = WorkflowStep::create([
-                        'workflow_version_id' => $version->id,
-                        'title_ar' => $step->title_ar,
-                        'title_en' => $step->title_en,
-                        'description' => $step->description,
-                        'sort_order' => $step->sort_order,
-                        'condition_logic' => $step->condition_logic,
-                        'is_visible' => $step->is_visible,
-                    ]);
-                    $stepMap[$step->id] = $newStep->id;
-                }
-
-                // Clone fields with remapped step_id
-                foreach ($sourceVersion->fields as $field) {
-                    WorkflowField::create([
-                        'workflow_version_id' => $version->id,
-                        'register_field_id' => $field->register_field_id,
-                        'step_id' => $field->step_id ? ($stepMap[$field->step_id] ?? null) : null,
-                        'label_override' => $field->label_override,
-                        'custom_name' => $field->custom_name,
-                        'custom_label' => $field->custom_label,
-                        'placeholder' => $field->placeholder,
-                        'default_value' => $field->default_value,
-                        'is_required' => $field->is_required,
-                        'is_visible' => $field->is_visible,
-                        'is_editable' => $field->is_editable,
-                        'is_readonly' => $field->is_readonly,
-                        'is_locked' => $field->is_locked,
-                        'is_financial' => $field->is_financial,
-                        'is_insured' => $field->is_insured,
-                        'insurance_value' => $field->insurance_value,
-                        'priority' => $field->priority,
-                        'is_computed' => $field->is_computed,
-                        'sort_order' => $field->sort_order,
-                        'condition_logic' => $field->condition_logic,
-                        'fee_code' => $field->fee_code,
-                        'calculation_formula' => $field->calculation_formula,
-                        'field_type' => $field->field_type,
-                        'options' => $field->options,
-                        'validation_rules' => $field->validation_rules,
-                        'conditional_validation_rules' => $field->conditional_validation_rules,
-                        'cross_field_validation_rules' => $field->cross_field_validation_rules,
-                        'computed_formula' => $field->computed_formula,
-                        'computed_dependencies' => $field->computed_dependencies,
-                        'parent_field_id' => $field->parent_field_id,
-                        'option_source_type' => $field->option_source_type,
-                        'option_source_config' => $field->option_source_config,
-                        'cascade_config' => $field->cascade_config,
-                    ]);
-                }
-
-                // Clone workflow rules
-                foreach ($sourceVersion->rules as $rule) {
-                    WorkflowRule::create([
-                        'workflow_version_id' => $version->id,
-                        'name' => $rule->name,
-                        'description' => $rule->description,
-                        'rule_type' => $rule->rule_type,
-                        'trigger_field_id' => $rule->trigger_field_id,
-                        'cases' => $rule->cases,
-                        'default_actions' => $rule->default_actions,
-                        'match_mode' => $rule->match_mode,
-                        'condition_logic' => $rule->condition_logic,
-                        'actions' => $rule->actions,
-                        'sort_order' => $rule->sort_order,
-                        'is_active' => $rule->is_active,
-                    ]);
-                }
-
-                // Clone validation rules (including enterprise rule_config)
-                foreach ($sourceVersion->validationRules as $vRule) {
-                    \App\Models\ValidationRule::create([
-                        'workflow_version_id' => $version->id,
-                        'name' => $vRule->name,
-                        'description' => $vRule->description,
-                        'validation_type' => $vRule->validation_type,
-                        'target_register_id' => $vRule->target_register_id,
-                        'trigger_field_id' => $vRule->trigger_field_id,
-                        'trigger_conditions' => $vRule->trigger_conditions,
-                        'target_fields' => $vRule->target_fields,
-                        'query_conditions' => $vRule->query_conditions,
-                        'sql_query' => $vRule->sql_query,
-                        'sql_condition' => $vRule->sql_condition,
-                        'route_config' => $vRule->route_config,
-                        'lookup_config' => $vRule->lookup_config,
-                        'field_effects' => $vRule->field_effects,
-                        'response_type' => $vRule->response_type,
-                        'error_message_ar' => $vRule->error_message_ar,
-                        'error_message_en' => $vRule->error_message_en,
-                        'confirm_message_ar' => $vRule->confirm_message_ar,
-                        'confirm_message_en' => $vRule->confirm_message_en,
-                        'sort_order' => $vRule->sort_order,
-                        'is_active' => $vRule->is_active,
-                        'rule_config' => $vRule->rule_config,
-                        'priority' => $vRule->priority,
-                        'category' => $vRule->category,
-                    ]);
-                }
+                $this->replicateVersionContents($sourceVersion, $version);
             });
         }
 
@@ -244,112 +144,146 @@ class WorkflowVersionController extends ApiController
                 'change_summary' => $request->input('change_summary', 'نسخة مستنسخة من V' . $sourceVersion->version),
             ]);
 
-            // Clone steps
-            $stepMap = [];
-            foreach ($sourceVersion->steps as $step) {
-                $newStep = WorkflowStep::create([
-                    'workflow_version_id' => $version->id,
-                    'title_ar' => $step->title_ar,
-                    'title_en' => $step->title_en,
-                    'description' => $step->description,
-                    'sort_order' => $step->sort_order,
-                    'condition_logic' => $step->condition_logic,
-                    'is_visible' => $step->is_visible,
-                ]);
-                $stepMap[$step->id] = $newStep->id;
-            }
-
-            // Clone fields
-            foreach ($sourceVersion->fields as $field) {
-                WorkflowField::create([
-                    'workflow_version_id' => $version->id,
-                    'register_field_id' => $field->register_field_id,
-                    'step_id' => $field->step_id ? ($stepMap[$field->step_id] ?? null) : null,
-                    'label_override' => $field->label_override,
-                    'custom_name' => $field->custom_name,
-                    'custom_label' => $field->custom_label,
-                    'placeholder' => $field->placeholder,
-                    'default_value' => $field->default_value,
-                    'is_required' => $field->is_required,
-                    'is_visible' => $field->is_visible,
-                    'is_editable' => $field->is_editable,
-                    'is_readonly' => $field->is_readonly,
-                    'is_locked' => $field->is_locked,
-                    'is_financial' => $field->is_financial,
-                    'is_insured' => $field->is_insured,
-                    'insurance_value' => $field->insurance_value,
-                    'priority' => $field->priority,
-                    'is_computed' => $field->is_computed,
-                    'sort_order' => $field->sort_order,
-                    'condition_logic' => $field->condition_logic,
-                    'fee_code' => $field->fee_code,
-                    'calculation_formula' => $field->calculation_formula,
-                    'field_type' => $field->field_type,
-                    'options' => $field->options,
-                    'validation_rules' => $field->validation_rules,
-                    'conditional_validation_rules' => $field->conditional_validation_rules,
-                    'cross_field_validation_rules' => $field->cross_field_validation_rules,
-                    'computed_formula' => $field->computed_formula,
-                    'computed_dependencies' => $field->computed_dependencies,
-                    'parent_field_id' => $field->parent_field_id,
-                    'option_source_type' => $field->option_source_type,
-                    'option_source_config' => $field->option_source_config,
-                    'cascade_config' => $field->cascade_config,
-                ]);
-            }
-
-            // Clone rules
-            foreach ($sourceVersion->rules as $rule) {
-                WorkflowRule::create([
-                    'workflow_version_id' => $version->id,
-                    'name' => $rule->name,
-                    'description' => $rule->description,
-                    'rule_type' => $rule->rule_type,
-                    'trigger_field_id' => $rule->trigger_field_id,
-                    'cases' => $rule->cases,
-                    'default_actions' => $rule->default_actions,
-                    'match_mode' => $rule->match_mode,
-                    'condition_logic' => $rule->condition_logic,
-                    'actions' => $rule->actions,
-                    'sort_order' => $rule->sort_order,
-                    'is_active' => $rule->is_active,
-                ]);
-            }
-
-            // Clone validation rules (including enterprise rule_config)
-            foreach ($sourceVersion->validationRules as $vRule) {
-                \App\Models\ValidationRule::create([
-                    'workflow_version_id' => $version->id,
-                    'name' => $vRule->name,
-                    'description' => $vRule->description,
-                    'validation_type' => $vRule->validation_type,
-                    'target_register_id' => $vRule->target_register_id,
-                    'trigger_field_id' => $vRule->trigger_field_id,
-                    'trigger_conditions' => $vRule->trigger_conditions,
-                    'target_fields' => $vRule->target_fields,
-                    'query_conditions' => $vRule->query_conditions,
-                    'sql_query' => $vRule->sql_query,
-                    'sql_condition' => $vRule->sql_condition,
-                    'route_config' => $vRule->route_config,
-                    'lookup_config' => $vRule->lookup_config,
-                    'field_effects' => $vRule->field_effects,
-                    'response_type' => $vRule->response_type,
-                    'error_message_ar' => $vRule->error_message_ar,
-                    'error_message_en' => $vRule->error_message_en,
-                    'confirm_message_ar' => $vRule->confirm_message_ar,
-                    'confirm_message_en' => $vRule->confirm_message_en,
-                    'sort_order' => $vRule->sort_order,
-                    'is_active' => $vRule->is_active,
-                    'rule_config' => $vRule->rule_config,
-                    'priority' => $vRule->priority,
-                    'category' => $vRule->category,
-                ]);
-            }
+            $this->replicateVersionContents($sourceVersion, $version);
 
             return $version;
         });
 
         return $this->success($newVersion->load(['steps', 'fields.registerField', 'rules', 'validationRules']), 'تم استنساخ النسخة بنجاح', [], 201);
+    }
+
+    /**
+     * Replicate a source version's steps, fields, rules and validation rules into a target
+     * version, remapping custom-field key references inside the cloned rules.
+     *
+     * Register-backed fields are keyed by the stable register_field_id, so their keys survive
+     * cloning unchanged. Custom fields are keyed by custom_<workflow_field.id>, and that id is
+     * regenerated on clone — so without remapping, cloned rules point at the SOURCE version's
+     * custom fields and silently never match (trigger value reads null → rule skipped).
+     */
+    private function replicateVersionContents(WorkflowVersion $source, WorkflowVersion $target): void
+    {
+        // Steps
+        $stepMap = [];
+        foreach ($source->steps as $step) {
+            $newStep = WorkflowStep::create([
+                'workflow_version_id' => $target->id,
+                'title_ar' => $step->title_ar,
+                'title_en' => $step->title_en,
+                'description' => $step->description,
+                'sort_order' => $step->sort_order,
+                'condition_logic' => $step->condition_logic,
+                'is_visible' => $step->is_visible,
+            ]);
+            $stepMap[$step->id] = $newStep->id;
+        }
+
+        // Fields — capture old→new custom-field key map for rule remapping.
+        $keyMap = [];
+        foreach ($source->fields as $field) {
+            $newField = WorkflowField::create([
+                'workflow_version_id' => $target->id,
+                'register_field_id' => $field->register_field_id,
+                'step_id' => $field->step_id ? ($stepMap[$field->step_id] ?? null) : null,
+                'label_override' => $field->label_override,
+                'custom_name' => $field->custom_name,
+                'custom_label' => $field->custom_label,
+                'placeholder' => $field->placeholder,
+                'default_value' => $field->default_value,
+                'is_required' => $field->is_required,
+                'is_visible' => $field->is_visible,
+                'is_editable' => $field->is_editable,
+                'is_readonly' => $field->is_readonly,
+                'is_locked' => $field->is_locked,
+                'is_financial' => $field->is_financial,
+                'is_insured' => $field->is_insured,
+                'insurance_value' => $field->insurance_value,
+                'priority' => $field->priority,
+                'is_computed' => $field->is_computed,
+                'sort_order' => $field->sort_order,
+                'condition_logic' => $field->condition_logic,
+                'fee_code' => $field->fee_code,
+                'calculation_formula' => $field->calculation_formula,
+                'field_type' => $field->field_type,
+                'options' => $field->options,
+                'validation_rules' => $field->validation_rules,
+                'conditional_validation_rules' => $field->conditional_validation_rules,
+                'cross_field_validation_rules' => $field->cross_field_validation_rules,
+                'computed_formula' => $field->computed_formula,
+                'computed_dependencies' => $field->computed_dependencies,
+                'parent_field_id' => $field->parent_field_id,
+                'option_source_type' => $field->option_source_type,
+                'option_source_config' => $field->option_source_config,
+                'cascade_config' => $field->cascade_config,
+            ]);
+
+            if ($field->register_field_id === null) {
+                $keyMap['custom_' . $field->id] = 'custom_' . $newField->id;
+            }
+        }
+
+        // Workflow rules — remap every custom-field key reference in the cloned rule.
+        foreach ($source->rules as $rule) {
+            WorkflowRule::create([
+                'workflow_version_id' => $target->id,
+                'name' => $rule->name,
+                'description' => $rule->description,
+                'rule_type' => $rule->rule_type,
+                'trigger_field_id' => $this->remapFieldKeys($rule->trigger_field_id, $keyMap),
+                'cases' => $this->remapFieldKeys($rule->cases, $keyMap),
+                'default_actions' => $this->remapFieldKeys($rule->default_actions, $keyMap),
+                'match_mode' => $rule->match_mode,
+                'condition_logic' => $this->remapFieldKeys($rule->condition_logic, $keyMap),
+                'actions' => $this->remapFieldKeys($rule->actions, $keyMap),
+                'sort_order' => $rule->sort_order,
+                'is_active' => $rule->is_active,
+            ]);
+        }
+
+        // Validation rules (including enterprise rule_config) — remap references too.
+        foreach ($source->validationRules as $vRule) {
+            \App\Models\ValidationRule::create([
+                'workflow_version_id' => $target->id,
+                'name' => $vRule->name,
+                'description' => $vRule->description,
+                'validation_type' => $vRule->validation_type,
+                'target_register_id' => $vRule->target_register_id,
+                'trigger_field_id' => $this->remapFieldKeys($vRule->trigger_field_id, $keyMap),
+                'trigger_conditions' => $this->remapFieldKeys($vRule->trigger_conditions, $keyMap),
+                'target_fields' => $this->remapFieldKeys($vRule->target_fields, $keyMap),
+                'query_conditions' => $this->remapFieldKeys($vRule->query_conditions, $keyMap),
+                'sql_query' => $vRule->sql_query,
+                'sql_condition' => $vRule->sql_condition,
+                'route_config' => $this->remapFieldKeys($vRule->route_config, $keyMap),
+                'lookup_config' => $this->remapFieldKeys($vRule->lookup_config, $keyMap),
+                'field_effects' => $this->remapFieldKeys($vRule->field_effects, $keyMap),
+                'response_type' => $vRule->response_type,
+                'error_message_ar' => $vRule->error_message_ar,
+                'error_message_en' => $vRule->error_message_en,
+                'confirm_message_ar' => $vRule->confirm_message_ar,
+                'confirm_message_en' => $vRule->confirm_message_en,
+                'sort_order' => $vRule->sort_order,
+                'is_active' => $vRule->is_active,
+                'rule_config' => $this->remapFieldKeys($vRule->rule_config, $keyMap),
+                'priority' => $vRule->priority,
+                'category' => $vRule->category,
+            ]);
+        }
+    }
+
+    /**
+     * Recursively replace any string that exactly equals a mapped field key.
+     * Field keys are custom_<uuid>, so exact-match replacement is collision-safe.
+     */
+    private function remapFieldKeys(mixed $data, array $keyMap): mixed
+    {
+        if (is_string($data)) {
+            return $keyMap[$data] ?? $data;
+        }
+        if (is_array($data)) {
+            return array_map(fn ($v) => $this->remapFieldKeys($v, $keyMap), $data);
+        }
+        return $data;
     }
 
     // --- Steps ---
