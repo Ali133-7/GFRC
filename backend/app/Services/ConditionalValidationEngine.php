@@ -129,7 +129,8 @@ class ConditionalValidationEngine
         $min = (int) $param;
 
         if (in_array($fieldType, ['number', 'decimal'], true) && is_numeric($value)) {
-            if ((float) $value < $min) {
+            // Use BC Math for numeric comparison to avoid float precision issues
+            if (bccomp((string) $value, (string) $min, 3) < 0) {
                 return "حقل {$label} يجب أن يكون {$min} على الأقل";
             }
         } elseif (is_string($value)) {
@@ -148,7 +149,8 @@ class ConditionalValidationEngine
         $max = (int) $param;
 
         if (in_array($fieldType, ['number', 'decimal'], true) && is_numeric($value)) {
-            if ((float) $value > $max) {
+            // Use BC Math for numeric comparison to avoid float precision issues
+            if (bccomp((string) $value, (string) $max, 3) > 0) {
                 return "حقل {$label} يجب أن يكون {$max} كحد أقصى";
             }
         } elseif (is_string($value)) {

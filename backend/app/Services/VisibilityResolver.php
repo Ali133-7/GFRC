@@ -99,7 +99,8 @@ class VisibilityResolver
         }
 
         return match ($type) {
-            'number', 'decimal' => is_numeric($value) ? (float) $value : null,
+            // Keep as string for BC Math compatibility in comparisons
+            'number', 'decimal' => is_numeric($value) ? (string) $value : null,
             'checkbox' => filter_var($value, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE),
             'date' => $this->parseDate($value),
             'select', 'radio', 'text', 'textarea' => (string) $value,
