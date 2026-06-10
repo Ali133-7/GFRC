@@ -42,7 +42,8 @@ class FormulaEvaluator
             if (is_array($value) || is_object($value)) {
                 throw new RuleEvaluationException("Invalid context value for variable: {$key}");
             }
-            $safeContext[$key] = is_numeric($value) ? (float) $value : $value;
+            // Preserve numeric values as strings for BC Math compatibility
+            $safeContext[$key] = is_numeric($value) ? $value : $value;
         }
 
         try {
@@ -53,7 +54,11 @@ class FormulaEvaluator
             throw new RuleEvaluationException("Formula evaluation error: {$e->getMessage()}");
         }
 
-        return number_format((float) $result, $scale, '.', '');
+        // Convert to string with proper decimal representation for BC Math
+        if (is_numeric($result)) {
+            return number_format((float) $result, $scale, '.', '');
+        }
+        return (string) $result;
     }
 
     /**

@@ -373,17 +373,17 @@ class ValidationEngine
 
     /**
      * Compare two scalar values with a whitelisted operator.
-     * Equality operators compare as strings; ordering operators compare numerically.
+     * Equality operators compare as strings; ordering operators use BC Math for precision.
      */
     protected function compareValues($left, string $operator, $right): bool
     {
         return match ($operator) {
             '=' => (string) $left === (string) $right,
             '!=' => (string) $left !== (string) $right,
-            '>' => (float) $left > (float) $right,
-            '>=' => (float) $left >= (float) $right,
-            '<' => (float) $left < (float) $right,
-            '<=' => (float) $left <= (float) $right,
+            '>' => bccomp((string) $left, (string) $right, 3) > 0,
+            '>=' => bccomp((string) $left, (string) $right, 3) >= 0,
+            '<' => bccomp((string) $left, (string) $right, 3) < 0,
+            '<=' => bccomp((string) $left, (string) $right, 3) <= 0,
             default => throw new \InvalidArgumentException("Unsupported operator in cross_register_check: {$operator}"),
         };
     }
@@ -518,14 +518,14 @@ class ValidationEngine
                 return false;
             }
 
-            // Check if condition is met
+            // Check if condition is met using BC Math for precision
             $conditionMet = match (true) {
-                str_contains($rule->sql_condition, '>=') => $actualValue >= (float) $expectedValue,
-                str_contains($rule->sql_condition, '<=') => $actualValue <= (float) $expectedValue,
-                str_contains($rule->sql_condition, '!=') => $actualValue != (float) $expectedValue,
-                str_contains($rule->sql_condition, '>') => $actualValue > (float) $expectedValue,
-                str_contains($rule->sql_condition, '<') => $actualValue < (float) $expectedValue,
-                default => $actualValue == (float) $expectedValue,
+                str_contains($rule->sql_condition, '>=') => bccomp((string) $actualValue, (string) $expectedValue, 3) >= 0,
+                str_contains($rule->sql_condition, '<=') => bccomp((string) $actualValue, (string) $expectedValue, 3) <= 0,
+                str_contains($rule->sql_condition, '!=') => (string) $actualValue !== (string) $expectedValue,
+                str_contains($rule->sql_condition, '>') => bccomp((string) $actualValue, (string) $expectedValue, 3) > 0,
+                str_contains($rule->sql_condition, '<') => bccomp((string) $actualValue, (string) $expectedValue, 3) < 0,
+                default => (string) $actualValue == (string) $expectedValue,
             };
 
             // Validation fails if condition is NOT met
