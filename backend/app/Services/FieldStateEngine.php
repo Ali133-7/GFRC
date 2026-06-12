@@ -48,9 +48,10 @@ class FieldStateEngine
      * @param string $fieldId UUID of the field
      * @param array $executionContext Must contain 'execution_id'
      * @param string|null $ruleId UUID of the triggering rule
+     * @param array|null $currentState The current state of the field (for audit trail)
      * @return array The new state fragment
      */
-    public function apply(string $action, string $fieldId, array $executionContext, ?string $ruleId = null): array
+    public function apply(string $action, string $fieldId, array $executionContext, ?string $ruleId = null, ?array $currentState = null): array
     {
         if (!isset(self::STATE_MAP[$action])) {
             Log::warning("FieldStateEngine: unknown action '{$action}'", [
@@ -64,7 +65,7 @@ class FieldStateEngine
 
         $executionId = $executionContext['execution_id'] ?? null;
         if ($executionId) {
-            $this->recordHistory($executionId, $fieldId, $ruleId, $newFragment);
+            $this->recordHistory($executionId, $fieldId, $ruleId, $newFragment, $currentState);
         }
 
         return $newFragment;
@@ -139,14 +140,14 @@ class FieldStateEngine
         return $fieldStates;
     }
 
-    private function recordHistory(string $executionId, string $fieldId, ?string $ruleId, array $newFragment): void
+    private function recordHistory(string $executionId, string $fieldId, ?string $ruleId, array $newFragment, ?array $currentState = null): void
     {
         try {
             DB::table('field_state_history')->insert([
                 'execution_id' => $executionId,
                 'field_id' => $fieldId,
                 'rule_id' => $ruleId,
-                'old_state' => json_encode($this->defaultState()),
+                'old_state' => json_encode($currentState ?? $this->defaultState()),
                 'new_state' => json_encode($newFragment),
                 'changed_at' => now(),
             ]);

@@ -12,13 +12,14 @@ import { storeLogo, fileToBase64 } from "@/utils/localStorageLogo";
 interface Setting { id: string; key: string; value: string; group: string; type: string; label_ar: string; }
 interface Backup  { filename: string; size: string; created_at: string; }
 
-type TabKey = "general" | "print" | "security" | "backup";
+type TabKey = "general" | "print" | "security" | "backup" | "dashboard";
 
 const SETTING_KEYS: Record<TabKey, string[]> = {
   general:  ["DEPT_NAME_AR","DEPT_NAME_EN","DEFAULT_FISCAL_YEAR","CURRENCY_CODE","RECEIPT_NUMBER_FORMAT"],
   print:    ["PRINT_FOOTER_TEXT","HIDE_ZERO_OR_EMPTY"],
   security: ["MAX_LOGIN_ATTEMPTS","LOGIN_LOCKOUT_MINUTES","ENABLE_AUDIT_LOG"],
   backup:   [],
+  dashboard: [],
 };
 
 const SETTING_LABELS: Record<string, string> = {
@@ -48,6 +49,49 @@ export default function SettingsPage() {
   const logoInputRef = useRef<HTMLInputElement>(null);
 
   const canReset = can("system.reset") && user?.roles?.some((r: { name: string }) => r.name === "super_admin");
+
+  // Dashboard Management
+  const { data: dashboards, isLoading: loadingDashboards, refetch: refetchDashboards } = useQuery({
+    queryKey: ["dashboards-all"],
+    queryFn: async () => {
+      const r = await client.get("/dashboards");
+      return r.data?.data ?? r.data ?? [];
+    },
+    enabled: tab === "dashboard",
+  });
+
+  const { data: users, isLoading: loadingUsers } = useQuery({
+    queryKey: ["users-list"],
+    queryFn: async () => {
+      const r = await client.get("/users");
+      return r.data?.data ?? r.data ?? [];
+    },
+    enabled: tab === "dashboard",
+  });
+
+  const handleAssignDashboard = async (userId: string, dashboardId: string) => {
+    try {
+      await client.post(`/users/${userId}/dashboard`, { dashboard_id: dashboardId });
+      setSaveMsg("تم تعيين الداشبورد بنجاح ✓");
+      setTimeout(() => setSaveMsg(""), 3000);
+      refetchDashboards();
+    } catch {
+      setSaveMsg("فشل تعيين الداشبورد");
+    }
+  };
+
+  const handleDeleteDashboard = async (dashboardId: string, dashboardName: string) => {
+    if (!confirm(`هل أنت متأكد من حذف الداشبورد "${dashboardName}" نهائياً؟ لا يمكن التراجع عن هذا الإجراء.`)) return;
+    try {
+      await client.delete(`/dashboards/${dashboardId}`);
+      setSaveMsg("تم حذف الداشبورد بنجاح ✓");
+      setTimeout(() => setSaveMsg(""), 3000);
+      refetchDashboards();
+    } catch (err: any) {
+      const msg = err?.response?.data?.message || "فشل حذف الداشبورد";
+      alert(msg);
+    }
+  };
 
   const { data: settings, isLoading: loadingSettings } = useQuery({
     queryKey: ["settings"],
@@ -193,11 +237,12 @@ export default function SettingsPage() {
     <div dir="rtl" style={{ padding: "24px", fontFamily: "'Noto Sans Arabic', sans-serif" }}>
       <PageHeader title="الإعدادات" />
 
-      <div style={{ display: "flex", borderBottom: "0.5px solid var(--color-border-tertiary)", marginBottom: "20px" }}>
+      <div style={{ display: "flex", borderBottom: "0.5px solid var(--color-border-tertiary)", marginBottom: "20px", flexWrap: "wrap", gap: "8px" }}>
         <button style={tabStyle("general")}  onClick={() => setTab("general")}>عام</button>
         <button style={tabStyle("print")}    onClick={() => setTab("print")}>طباعة</button>
         <button style={tabStyle("security")} onClick={() => setTab("security")}>أمان</button>
         <button style={tabStyle("backup")}   onClick={() => setTab("backup")}>نسخ احتياطي</button>
+        <button style={tabStyle("dashboard")} onClick={() => setTab("dashboard")}>📊 الداشبورد</button>
       </div>
 
       {tab !== "backup" && (
@@ -319,6 +364,216 @@ export default function SettingsPage() {
                 ))}
               </tbody>
             </table>
+          )}
+        </div>
+      )}
+
+      {tab === "dashboard" && (
+        <div style={{ background: "var(--color-background-primary)", border: "0.5px solid var(--color-border-tertiary)", borderRadius: "var(--border-radius-lg)", padding: "20px" }}>
+          {loadingDashboards || loadingUsers ? <LoadingSpinner /> : (
+            <>
+              {/* Dashboards List */}
+              <div style={{ marginBottom: "32px" }}>
+                <h3 style={{ fontSize: "15px", fontWeight: 600, color: "var(--color-text-primary)", marginBottom: "16px" }}>
+                  📊 الداشبورد المتاحة ({dashboards?.length || 0})
+                </h3>
+                
+                {(dashboards && dashboards.length > 0) ? (
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(350px, 1fr))", gap: "16px" }}>
+                    {dashboards.map((dashboard: any) => (
+                      <div
+                        key={dashboard.id}
+                        style={{
+                          padding: "16px",
+                          background: "var(--color-background-secondary)",
+                          border: "1px solid var(--color-border-tertiary)",
+                          borderRadius: "8px",
+                          transition: "box-shadow 0.2s",
+                        }}
+                        onMouseEnter={(e) => {
+                          (e.currentTarget as HTMLElement).style.boxShadow = "0 2px 8px rgba(0,0,0,0.08)";
+                        }}
+                        onMouseLeave={(e) => {
+                          (e.currentTarget as HTMLElement).style.boxShadow = "none";
+                        }}
+                      >
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "12px" }}>
+                          <div>
+                            <div style={{ fontSize: "14px", fontWeight: 600, color: "var(--color-text-primary)", marginBottom: "4px" }}>
+                              {dashboard.name_ar || dashboard.name || 'داشبورد بدون اسم'}
+                            </div>
+                            <div style={{ fontSize: "11px", color: "var(--color-text-tertiary)" }}>
+                              {dashboard.visibility === 'public' ? '🌍 عامة' :
+                               dashboard.visibility === 'shared' ? '👥 مشتركة' :
+                               dashboard.visibility === 'role' ? '👔 حسب الصلاحية' :
+                               dashboard.visibility === 'department' ? '🏢 حسب القسم' : '🔒 خاصة'}
+                            </div>
+                          </div>
+                          <div style={{ display: "flex", gap: "6px" }}>
+                            <span style={{
+                              fontSize: "11px",
+                              padding: "2px 8px",
+                              borderRadius: "10px",
+                              background: dashboard.scope === 'system' ? "var(--color-background-info)" : "var(--color-background-primary)",
+                              color: dashboard.scope === 'system' ? "var(--color-text-info)" : "var(--color-text-secondary)",
+                              border: "0.5px solid var(--color-border-tertiary)",
+                            }}>
+                              {dashboard.scope === 'system' ? '⚙️ نظام' : dashboard.scope === 'user' ? '👤 مستخدم' : '👥 مجموعة'}
+                            </span>
+                          </div>
+                        </div>
+                        
+                        <div style={{ fontSize: "12px", color: "var(--color-text-secondary)", marginBottom: "12px" }}>
+                          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "4px" }}>
+                            <span>📑 الأقسام:</span>
+                            <span style={{ fontWeight: 500 }}>{dashboard.sections_count || 0}</span>
+                          </div>
+                          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "4px" }}>
+                            <span>🎯 الودجات:</span>
+                            <span style={{ fontWeight: 500 }}>{dashboard.widgets_count || 0}</span>
+                          </div>
+                          {dashboard.created_by_name && (
+                            <div style={{ display: "flex", justifyContent: "space-between" }}>
+                              <span>👤 أنشأها:</span>
+                              <span style={{ fontWeight: 500 }}>{dashboard.created_by_name}</span>
+                            </div>
+                          )}
+                        </div>
+                        
+                        <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+                          <button
+                            onClick={() => window.location.href = `/dashboard/builder/${dashboard.id}`}
+                            style={{
+                              flex: 1,
+                              padding: "6px 12px",
+                              fontSize: "12px",
+                              fontWeight: 500,
+                              border: "0.5px solid var(--color-border-info)",
+                              background: "var(--color-background-info)",
+                              color: "var(--color-text-info)",
+                              borderRadius: "6px",
+                              cursor: "pointer",
+                              fontFamily: "inherit",
+                            }}
+                          >
+                            ✏️ تعديل
+                          </button>
+                          <button
+                            onClick={() => handleDeleteDashboard(dashboard.id, dashboard.name_ar || dashboard.name)}
+                            style={{
+                              padding: "6px 12px",
+                              fontSize: "12px",
+                              fontWeight: 500,
+                              border: "0.5px solid var(--color-border-danger)",
+                              background: "none",
+                              color: "var(--color-text-danger)",
+                              borderRadius: "6px",
+                              cursor: "pointer",
+                              fontFamily: "inherit",
+                            }}
+                          >
+                            🗑️ حذف
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div style={{ textAlign: "center", padding: "48px", color: "var(--color-text-tertiary)" }}>
+                    <div style={{ fontSize: "48px", marginBottom: "16px" }}>📊</div>
+                    <div style={{ fontSize: "14px", fontWeight: 500 }}>لا توجد داشبورد</div>
+                    <div style={{ fontSize: "12px", marginTop: "8px" }}>ابدأ بإنشاء داشبورد جديدة من صفحة الداشبورد</div>
+                  </div>
+                )}
+              </div>
+
+              {/* User Dashboard Assignments */}
+              <div>
+                <h3 style={{ fontSize: "15px", fontWeight: 600, color: "var(--color-text-primary)", marginBottom: "16px" }}>
+                  👥 تعيين الداشبورد للمستخدمين
+                </h3>
+                
+                {(users && users.length > 0) ? (
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(400px, 1fr))", gap: "12px" }}>
+                    {users.map((user: any) => (
+                      <div
+                        key={user.id}
+                        style={{
+                          padding: "14px",
+                          background: "var(--color-background-secondary)",
+                          border: "1px solid var(--color-border-tertiary)",
+                          borderRadius: "8px",
+                        }}
+                      >
+                        <div style={{ display: "flex", alignItems: "center", gap: "12px", marginBottom: "12px" }}>
+                          <div style={{
+                            width: "40px",
+                            height: "40px",
+                            borderRadius: "50%",
+                            background: "var(--color-background-info)",
+                            color: "var(--color-text-info)",
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            fontSize: "16px",
+                            fontWeight: 600,
+                            flexShrink: 0,
+                          }}>
+                            {user.name?.charAt(0) || user.username?.charAt(0) || '👤'}
+                          </div>
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{ fontSize: "13px", fontWeight: 600, color: "var(--color-text-primary)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                              {user.name || 'مستخدم بدون اسم'}
+                            </div>
+                            <div style={{ fontSize: "11px", color: "var(--color-text-tertiary)" }}>
+                              {user.username}
+                            </div>
+                          </div>
+                        </div>
+                        
+                        <div style={{ marginBottom: "8px" }}>
+                          <label style={{ fontSize: "11px", fontWeight: 500, color: "var(--color-text-secondary)", display: "block", marginBottom: "6px" }}>
+                            الداشبورد المخصصة:
+                          </label>
+                          <select
+                            value={user.dashboard_id || ''}
+                            onChange={(e) => handleAssignDashboard(user.id, e.target.value)}
+                            style={{
+                              width: "100%",
+                              padding: "6px 10px",
+                              fontSize: "12px",
+                              border: "0.5px solid var(--color-border-secondary)",
+                              borderRadius: "6px",
+                              background: "var(--color-background-primary)",
+                              color: "var(--color-text-primary)",
+                              fontFamily: "inherit",
+                            }}
+                          >
+                            <option value="">-- داشبورد افتراضية --</option>
+                            {dashboards?.filter((d: any) => d.visibility === 'public' || d.visibility === 'shared').map((d: any) => (
+                              <option key={d.id} value={d.id}>
+                                {d.name_ar || d.name || 'داشبورد'}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                        
+                        {user.dashboard_id && (
+                          <div style={{ fontSize: "11px", color: "var(--color-text-success)", display: "flex", alignItems: "center", gap: "4px" }}>
+                            <span>✅</span>
+                            <span>تم تعيين داشبورد مخصصة</span>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div style={{ textAlign: "center", padding: "32px", color: "var(--color-text-tertiary)" }}>
+                    لا يوجد مستخدمين
+                  </div>
+                )}
+              </div>
+            </>
           )}
         </div>
       )}

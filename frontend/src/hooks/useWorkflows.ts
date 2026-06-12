@@ -26,7 +26,20 @@ export const useCreateWorkflow = () => {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: workflowApi.create,
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["workflows"] }),
+    onSuccess: (data) => {
+      // Clear ALL workflow-related cache to prevent stale data
+      qc.removeQueries({ queryKey: ["workflows"] });
+      qc.removeQueries({ queryKey: ["workflow-versions"] });
+      qc.removeQueries({ queryKey: ["workflow-executions"] });
+      
+      // Invalidate to refetch with fresh data
+      qc.invalidateQueries({ queryKey: ["workflows"] });
+      
+      // Force reload by navigating with state
+      if (data?.id) {
+        window.location.href = `/workflows/${data.id}`;
+      }
+    },
   });
 };
 
@@ -61,8 +74,17 @@ export const useWorkflowVersions = (workflowId: string) =>
 export const useWorkflowVersion = (workflowId: string, versionId: string) =>
   useQuery({
     queryKey: ["workflows", workflowId, "versions", versionId],
-    queryFn: () => workflowVersionApi.get(workflowId, versionId),
+    queryFn: async () => {
+      const data = await workflowVersionApi.get(workflowId, versionId);
+      // If API returns null or error, throw to trigger retry
+      if (!data) throw new Error('Version not found');
+      return data;
+    },
     enabled: !!workflowId && !!versionId,
+    staleTime: 0,
+    gcTime: 0,
+    retry: false, // Don't retry on failure - let the page handle it
+    refetchOnWindowFocus: false,
   });
 
 export const useCreateVersion = () => {

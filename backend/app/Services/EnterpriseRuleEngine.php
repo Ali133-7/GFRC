@@ -35,6 +35,14 @@ class EnterpriseRuleEngine
     {
         $startTime = microtime(true);
 
+        // Load fields for key normalization
+        $fields = \App\Models\WorkflowField::where('workflow_version_id', $workflowVersionId)->get();
+        
+        // CRITICAL: Normalize field keys BEFORE rule execution
+        // This ensures all field references (UUID, register_field_id, custom_<id>)
+        // resolve to the same canonical key
+        $normalizedValues = $this->normalizeFieldKeys($values, $fields);
+
         // Load enterprise rules from validation_rules table
         $enterpriseRules = ValidationRule::where('workflow_version_id', $workflowVersionId)
             ->where('is_active', true)
@@ -50,7 +58,7 @@ class EnterpriseRuleEngine
             ->get();
 
         $results = [];
-        $finalValues = $values;
+        $finalValues = $normalizedValues;
         $finalFieldStates = $context['field_states'] ?? [];
         $routingDecisions = [];
         $warnings = [];
@@ -278,8 +286,10 @@ class EnterpriseRuleEngine
 
     /**
      * Evaluate a single rule and return detailed results.
+     * 
+     * FIXED: Changed from protected to public so RealTimeRuleEngine can call it.
      */
-    protected function evaluateRule(
+    public function evaluateRule(
         string $ruleId,
         ?string $ruleName,
         string $ruleType,
@@ -545,6 +555,49 @@ class EnterpriseRuleEngine
         $operator = $condition['operator'] ?? 'equals';
         $expectedValue = $condition['value'] ?? null;
         $actualValue = $values[$fieldId] ?? null;
+        
+        // === ARABIC DEBUG TRACE ===
+        $fieldName = $this->resolveFieldName($fieldId, $context);
+        $stepInfo = $this->resolveFieldStep($fieldId, $context);
+        
+        \Log::info('🔍 تقييم شرط القاعدة', [
+            'اسم_القاعدة' => $context['rule_name'] ?? 'غير معروف',
+            'اسم_الحقل' => $fieldName,
+            'معرف_الحقل' => $fieldId,
+            'الخطوة' => $stepInfo,
+            'العامل' => $this->translateOperator($operator),
+            'القيمة_المتوقعة' => $expectedValue,
+            'القيمة_الفعلية' => $actualValue ?? 'لا شيء (null)',
+            'القيمة_موجودة' => $actualValue !== null && $actualValue !== '' ? 'نعم ✅' : 'لا ❌',
+        ]);
+        
+        if ($actualValue === null || $actualValue === '') {
+            \Log::warning('⚠️ قيمة الحقل فارغة - لن يتم تنفيذ الشرط', [
+                'الحقل' => $fieldName,
+                'السبب_المحتمل' => '1) الحقل غير مطلوب 2) المستخدم لم يدخل قيمة 3) الحقل في خطوة أخرى',
+                'الحل_المقترح' => 'اجعل الحقل إلزامي أو أضف قيمة افتراضية',
+            ]);
+        }
+        // === END ARABIC DEBUG TRACE ===
+
+        // CRITICAL FIX: Handle null/empty values gracefully
+        if ($actualValue === null || $actualValue === '') {
+            // For numeric comparisons, null/empty means condition is NOT met
+            if (in_array($operator, ['greater_than', 'greater_or_equal', 'less_than', 'less_or_equal', 'equals', 'not_equals'])) {
+                \Log::debug('❌ الشرط غير محقق: القيمة فارغة', [
+                    'العامل' => $operator,
+                ]);
+                return false;
+            }
+            
+            // For emptiness checks, handle specially
+            if ($operator === 'is_empty' || $operator === 'is_not_empty') {
+                // Continue to evaluation - null is considered empty
+            } else {
+                // All other operators fail on null
+                return false;
+            }
+        }
 
         // Normalize operator aliases
         $operatorMap = [
@@ -567,88 +620,81 @@ class EnterpriseRuleEngine
 
         switch ($operator) {
             case 'equals':
-                return (string) $actualValue === (string) $expectedValue;
+                $result = (string) $actualValue === (string) $expectedValue;
+                break;
 
             case 'not_equals':
-                return (string) $actualValue !== (string) $expectedValue;
+                $result = (string) $actualValue !== (string) $expectedValue;
+                break;
 
             case 'greater_than':
-                return bccomp($this->toDecimalString($actualValue), $this->toDecimalString($expectedValue), 3) > 0;
+                $result = bccomp($this->toDecimalString($actualValue), $this->toDecimalString($expectedValue), 3) > 0;
+                break;
 
             case 'greater_or_equal':
-                return bccomp($this->toDecimalString($actualValue), $this->toDecimalString($expectedValue), 3) >= 0;
+                $result = bccomp($this->toDecimalString($actualValue), $this->toDecimalString($expectedValue), 3) >= 0;
+                break;
 
             case 'less_than':
-                return bccomp($this->toDecimalString($actualValue), $this->toDecimalString($expectedValue), 3) < 0;
+                $result = bccomp($this->toDecimalString($actualValue), $this->toDecimalString($expectedValue), 3) < 0;
+                break;
 
             case 'less_or_equal':
-                return bccomp($this->toDecimalString($actualValue), $this->toDecimalString($expectedValue), 3) <= 0;
+                $result = bccomp($this->toDecimalString($actualValue), $this->toDecimalString($expectedValue), 3) <= 0;
+                break;
 
             case 'contains':
-                return str_contains((string) $actualValue, (string) $expectedValue);
+                $result = str_contains((string) $actualValue, (string) $expectedValue);
+                break;
 
             case 'not_contains':
-                return !str_contains((string) $actualValue, (string) $expectedValue);
+                $result = !str_contains((string) $actualValue, (string) $expectedValue);
+                break;
 
             case 'starts_with':
-                return str_starts_with((string) $actualValue, (string) $expectedValue);
+                $result = str_starts_with((string) $actualValue, (string) $expectedValue);
+                break;
 
             case 'ends_with':
-                return str_ends_with((string) $actualValue, (string) $expectedValue);
+                $result = str_ends_with((string) $actualValue, (string) $expectedValue);
+                break;
+
+            case 'is_empty':
+                $result = $actualValue === null || $actualValue === '';
+                break;
+
+            case 'is_not_empty':
+                $result = $actualValue !== null && $actualValue !== '';
+                break;
 
             case 'between':
                 $val = $this->toDecimalString($actualValue);
                 if (is_array($expectedValue)) {
                     $start = $this->toDecimalString($expectedValue[0] ?? '0');
                     $end = $this->toDecimalString($expectedValue[1] ?? '0');
+                    $result = bccomp($val, $start, 3) >= 0 && bccomp($val, $end, 3) <= 0;
                 } else {
                     $start = $this->toDecimalString($expectedValue);
                     $end = $this->toDecimalString($condition['value_end'] ?? $expectedValue);
+                    $result = bccomp($val, $start, 3) >= 0 && bccomp($val, $end, 3) <= 0;
                 }
-                return bccomp($val, $start, 3) >= 0 && bccomp($val, $end, 3) <= 0;
-
-            case 'in':
-                $list = is_array($expectedValue) ? $expectedValue : json_decode($expectedValue, true) ?? [];
-                return in_array((string) $actualValue, array_map('strval', $list));
-
-            case 'not_in':
-                $list = is_array($expectedValue) ? $expectedValue : json_decode($expectedValue, true) ?? [];
-                return !in_array((string) $actualValue, array_map('strval', $list));
-
-            case 'any_of':
-                $list = is_array($expectedValue) ? $expectedValue : json_decode($expectedValue, true) ?? [];
-                return !empty(array_intersect(
-                    is_array($actualValue) ? $actualValue : [(string) $actualValue],
-                    $list
-                ));
-
-            case 'all_of':
-                $list = is_array($expectedValue) ? $expectedValue : json_decode($expectedValue, true) ?? [];
-                $actualList = is_array($actualValue) ? $actualValue : [(string) $actualValue];
-                return empty(array_diff($list, $actualList));
-
-            case 'is_empty':
-                return $actualValue === null || $actualValue === '';
-
-            case 'is_not_empty':
-                return $actualValue !== null && $actualValue !== '';
-
-            case 'exists':
-                return $actualValue !== null;
-
-            case 'not_exists':
-                return $actualValue === null;
-
-            case 'regex':
-                return @preg_match((string) $expectedValue, (string) $actualValue) === 1;
-
-            case 'matches_pattern':
-                $pattern = str_replace(['*', '?'], ['.*', '.'], preg_quote((string) $expectedValue, '/'));
-                return @preg_match('/^' . $pattern . '$/', (string) $actualValue) === 1;
+                break;
 
             default:
-                return false;
+                $result = false;
         }
+
+        // === ARABIC DEBUG RESULT ===
+        \Log::info($result ? '✅ الشرط محقق' : '❌ الشرط غير محقق', [
+            'اسم_الحقل' => $fieldName,
+            'العامل' => $this->translateOperator($operator),
+            'القيمة_الفعلية' => $actualValue,
+            'القيمة_المتوقعة' => $expectedValue,
+            'النتيجة' => $result ? 'نعم' : 'لا',
+        ]);
+        // === END ARABIC DEBUG RESULT ===
+
+        return $result;
     }
 
     /**
@@ -773,6 +819,7 @@ class EnterpriseRuleEngine
                             'action' => 'calculate',
                             'formula' => $value,
                             'result' => $calculated,
+                            'resolved_amount' => $calculated,  // ✅ إضافة لـ calculateItems
                         ];
                         $financialTrace[] = [
                             'step' => 'formula_calculation',
@@ -977,7 +1024,8 @@ class EnterpriseRuleEngine
                         $discountValue = $action['discount_value'] ?? $action['value'] ?? null;
                         if ($discountValue === null) break;
                         $discountType = $action['discount_type'] ?? 'percentage';
-                        $scale = 3;
+                        $ctx = $this->getContext();
+                        $scale = $ctx->scale();
                         $baseValue = $this->toDecimalString($finalValues[$fieldId] ?? '0');
                         $discountVal = $this->toDecimalString($discountValue);
                         $discountAmount = $discountType === 'percentage'
@@ -1008,7 +1056,81 @@ class EnterpriseRuleEngine
                     }
                     break;
 
-                case 'set_field_type':
+            case 'multiply_and_add':
+                /**
+                 * Multiply source field value by a fixed multiplier and add to target field.
+                 * 
+                 * Action config:
+                 * - source_field_id: Field containing user input (e.g., broker records count)
+                 * - multiplier: Fixed amount defined in workflow (e.g., 50000)
+                 * - target_field_id: Field to add result to (e.g., goods for sale)
+                 * - condition: Optional condition (> 0, != 0, etc.)
+                 * 
+                 * Example:
+                 * - source_field_id = "broker_records" (user enters 2)
+                 * - multiplier = 50000 (defined in workflow)
+                 * - target_field_id = "goods_for_sale" (current value: 10000)
+                 * - Result: 10000 + (2 * 50000) = 110000
+                 */
+                $sourceFieldId = $action['source_field_id'] ?? null;
+                $multiplier = $action['multiplier'] ?? '0';
+                $targetFieldId = $action['target_field_id'] ?? null;
+                $condition = $action['condition'] ?? '> 0'; // Default: only if source > 0
+
+                if (!$sourceFieldId || !$targetFieldId) {
+                    break;
+                }
+
+                $sourceValue = $finalValues[$sourceFieldId] ?? '0';
+                $sourceValue = $this->toDecimalString($sourceValue);
+
+                // Check condition (default: > 0)
+                $shouldApply = false;
+                if ($condition === '> 0' || $condition === '!= 0') {
+                    $shouldApply = bccomp($sourceValue, '0', $scale) > 0;
+                } elseif ($condition === '>= 0') {
+                    $shouldApply = bccomp($sourceValue, '0', $scale) >= 0;
+                } else {
+                    $shouldApply = true; // Always apply
+                }
+
+                if ($shouldApply) {
+                    $multiplier = $this->toDecimalString($multiplier);
+                    $calculationResult = bcmul($sourceValue, $multiplier, $scale);
+
+                    // Get current target value
+                    $currentTargetValue = $finalValues[$targetFieldId] ?? '0';
+                    $currentTargetValue = $this->toDecimalString($currentTargetValue);
+
+                    // Add calculation result to target
+                    $newTargetValue = bcadd($currentTargetValue, $calculationResult, $scale);
+                    $finalValues[$targetFieldId] = $newTargetValue;
+
+                    $executed[] = $action['id'] ?? $actionType;
+                    $fieldEffects[] = [
+                        'field_id' => $targetFieldId,
+                        'action' => 'multiply_and_add',
+                        'source_field_id' => $sourceFieldId,
+                        'source_value' => $sourceValue,
+                        'multiplier' => $multiplier,
+                        'calculation_result' => $calculationResult,
+                        'old_target_value' => $currentTargetValue,
+                        'new_target_value' => $newTargetValue,
+                    ];
+                    $financialTrace[] = [
+                        'step' => 'multiply_and_add',
+                        'source_field_id' => $sourceFieldId,
+                        'source_value' => $sourceValue,
+                        'multiplier' => $multiplier,
+                        'calculation_result' => $calculationResult,
+                        'target_field_id' => $targetFieldId,
+                        'old_target_value' => $currentTargetValue,
+                        'new_target_value' => $newTargetValue,
+                    ];
+                }
+                break;
+
+            case 'set_field_type':
                     if ($fieldId) {
                         $newType = $action['value'] ?? $action['field_type'] ?? 'text';
                         $finalFieldStates[$fieldId] = array_merge(
@@ -1294,6 +1416,62 @@ class EnterpriseRuleEngine
     }
 
     /**
+     * Normalize field keys in values array to ensure consistent field resolution.
+     * 
+     * This ensures that regardless of how a field is referenced (UUID, register_field_id,
+     * or custom_<id>), all aliases map to the same canonical key.
+     * 
+     * @param array $values The values array to normalize
+     * @param \Illuminate\Support\Collection $fields Collection of WorkflowField objects
+     * @return array Normalized values array
+     */
+    protected function normalizeFieldKeys(array $values, $fields): array
+    {
+        $normalized = $values;
+
+        foreach ($fields as $field) {
+            // Canonical key: register_field_id or custom_<id>
+            $canonical = !empty($field->register_field_id) ? $field->register_field_id : 'custom_' . $field->id;
+            
+            // All possible aliases for this field
+            $aliases = [
+                $field->id, // UUID
+                'custom_' . $field->id, // Custom format
+            ];
+            if (!empty($field->register_field_id)) {
+                $aliases[] = $field->register_field_id;
+            }
+
+            // Find the best value (prefer canonical, then any alias)
+            $bestValue = null;
+            $bestFound = false;
+            
+            if (array_key_exists($canonical, $values)) {
+                $bestValue = $values[$canonical];
+                $bestFound = true;
+            } else {
+                foreach ($aliases as $alias) {
+                    if (array_key_exists($alias, $values)) {
+                        $bestValue = $values[$alias];
+                        $bestFound = true;
+                        break;
+                    }
+                }
+            }
+
+            if ($bestFound) {
+                // Set all aliases to the same value for consistent lookup
+                $normalized[$canonical] = $bestValue;
+                foreach ($aliases as $alias) {
+                    $normalized[$alias] = $bestValue;
+                }
+            }
+        }
+
+        return $normalized;
+    }
+
+    /**
      * Count total conditions in a tree.
      */
     protected function countConditions(array $conditions): int
@@ -1358,5 +1536,103 @@ class EnterpriseRuleEngine
     public function simulate(string $workflowVersionId, array $testValues, array $context = []): array
     {
         return $this->execute($workflowVersionId, $testValues, $context);
+    }
+
+    /**
+     * Check if a step should be visible based on its condition logic.
+     * Delegates to RuleEngineV2 for condition evaluation.
+     */
+    public function isStepVisible(array $conditionLogic, array $values, array $context = []): bool
+    {
+        if (empty($conditionLogic)) {
+            return true;
+        }
+        return $this->evaluateConditions($conditionLogic, $values, $context);
+    }
+
+    /**
+     * Resolve field name from ID for Arabic debugging.
+     */
+    protected function resolveFieldName(?string $fieldId, array $context): string
+    {
+        if (!$fieldId) return 'غير محدد';
+        
+        // Try to get from context
+        $fields = $context['fields'] ?? [];
+        if (!empty($fields)) {
+            foreach ($fields as $field) {
+                $fieldKey = $field->register_field_id ?? 'custom_'.$field->id;
+                if ($fieldKey === $fieldId || $field->id === $fieldId) {
+                    return $field->label ?? $field->name ?? $fieldId;
+                }
+            }
+        }
+        
+        // Fallback: try to extract from field_id
+        if (str_starts_with($fieldId, 'custom_')) {
+            return 'حقل مخصص (' . substr($fieldId, 0, 20) . '...)';
+        }
+        
+        return $fieldId;
+    }
+
+    /**
+     * Resolve which step contains a field.
+     */
+    protected function resolveFieldStep(?string $fieldId, array $context): string
+    {
+        if (!$fieldId) return 'غير محدد';
+        
+        $steps = $context['steps'] ?? [];
+        $fields = $context['fields'] ?? [];
+        
+        if (empty($steps) || empty($fields)) {
+            return 'غير متوفر';
+        }
+        
+        $field = null;
+        foreach ($fields as $f) {
+            $fieldKey = $f->register_field_id ?? 'custom_'.$f->id;
+            if ($fieldKey === $fieldId || $f->id === $fieldId) {
+                $field = $f;
+                break;
+            }
+        }
+        
+        if (!$field) {
+            return 'الحقل غير موجود في هذه النسخة';
+        }
+        
+        foreach ($steps as $step) {
+            if ($step->id === $field->step_id) {
+                return $step->title_ar ?? 'الخطوة ' . ($step->sort_order ?? '?');
+            }
+        }
+        
+        return 'بدون خطوة';
+    }
+
+    /**
+     * Translate operator to Arabic.
+     */
+    protected function translateOperator(string $operator): string
+    {
+        $translations = [
+            'equals' => 'يساوي',
+            'not_equals' => 'لا يساوي',
+            'greater_than' => 'أكبر من',
+            'greater_or_equal' => 'أكبر من أو يساوي',
+            'less_than' => 'أصغر من',
+            'less_or_equal' => 'أصغر من أو يساوي',
+            'contains' => 'يحتوي على',
+            'not_contains' => 'لا يحتوي على',
+            'starts_with' => 'يبدأ بـ',
+            'ends_with' => 'ينتهي بـ',
+            'is_empty' => 'فارغ',
+            'is_not_empty' => 'ليس فارغاً',
+            'between' => 'بين',
+        ];
+        
+        return $translations[$operator] ?? $operator;
     }
 }

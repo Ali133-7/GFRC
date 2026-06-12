@@ -1,0 +1,324 @@
+{
+  "name": "Daily Revenue Report",
+  "name_ar": "تقرير الإيرادات اليومية",
+  "code": "RPT_DAILY_REVENUE_001",
+  "description": "Comprehensive daily revenue report with breakdowns by register and payment method",
+  "data_source": "receipts",
+  "type": "analytics",
+  "visibility": "shared",
+  "scope": "department",
+  "is_active": true,
+  "is_system": false,
+  
+  "configuration": {
+    "joins": [
+      {
+        "table": "registers",
+        "first": "receipts.register_id",
+        "operator": "=",
+        "second": "registers.id"
+      },
+      {
+        "table": "users",
+        "first": "receipts.created_by",
+        "operator": "=",
+        "second": "users.id"
+      }
+    ],
+    "default_sort": {
+      "field": "created_at",
+      "direction": "desc"
+    },
+    "cache_enabled": true,
+    "cache_ttl": 300
+  },
+
+  "fields": [
+    {
+      "field_name": "transaction_number",
+      "field_label": "Transaction Number",
+      "field_label_ar": "رقم المعاملة",
+      "field_type": "string",
+      "is_visible": true,
+      "is_filterable": true,
+      "is_sortable": true,
+      "is_groupable": false,
+      "sort_order": 1,
+      "formatting": {
+        "type": "text"
+      }
+    },
+    {
+      "field_name": "amount",
+      "field_label": "Amount",
+      "field_label_ar": "المبلغ",
+      "field_type": "currency",
+      "is_visible": true,
+      "is_filterable": false,
+      "is_sortable": true,
+      "is_groupable": false,
+      "sort_order": 2,
+      "formatting": {
+        "type": "currency",
+        "decimals": 3,
+        "currency_symbol": "د.ع"
+      }
+    },
+    {
+      "field_name": "payment_method",
+      "field_label": "Payment Method",
+      "field_label_ar": "طريقة الدفع",
+      "field_type": "string",
+      "is_visible": true,
+      "is_filterable": true,
+      "is_sortable": false,
+      "is_groupable": true,
+      "sort_order": 3
+    },
+    {
+      "field_name": "status",
+      "field_label": "Status",
+      "field_label_ar": "الحالة",
+      "field_type": "string",
+      "is_visible": true,
+      "is_filterable": true,
+      "is_sortable": true,
+      "is_groupable": true,
+      "sort_order": 4
+    },
+    {
+      "field_name": "created_at",
+      "field_label": "Date",
+      "field_label_ar": "التاريخ",
+      "field_type": "datetime",
+      "is_visible": true,
+      "is_filterable": true,
+      "is_sortable": true,
+      "is_groupable": false,
+      "sort_order": 5,
+      "formatting": {
+        "type": "datetime",
+        "format": "Y-m-d H:i"
+      }
+    },
+    {
+      "field_name": "name_ar",
+      "field_label": "Register Name",
+      "field_label_ar": "اسم السجل",
+      "field_type": "string",
+      "table_alias": "registers",
+      "is_visible": true,
+      "is_filterable": false,
+      "is_sortable": false,
+      "is_groupable": true,
+      "sort_order": 6
+    },
+    {
+      "field_name": "name",
+      "field_label": "Cashier Name",
+      "field_label_ar": "اسم الصراف",
+      "field_type": "string",
+      "table_alias": "users",
+      "is_visible": true,
+      "is_filterable": false,
+      "is_sortable": false,
+      "is_groupable": false,
+      "sort_order": 7
+    }
+  ],
+
+  "filters": [
+    {
+      "filter_name": "date_range",
+      "filter_label": "Date Range",
+      "filter_label_ar": "الفترة الزمنية",
+      "field_name": "created_at",
+      "filter_type": "date_range",
+      "operator": "between",
+      "is_required": true,
+      "default_value": {
+        "start": "{{ today }}",
+        "end": "{{ today }}"
+      },
+      "sort_order": 1
+    },
+    {
+      "filter_name": "register_id",
+      "filter_label": "Register",
+      "filter_label_ar": "السجل",
+      "field_name": "register_id",
+      "filter_type": "select",
+      "operator": "=",
+      "options": {
+        "source": "registers",
+        "value_field": "id",
+        "label_field": "name_ar"
+      },
+      "is_required": false,
+      "is_multiple": true,
+      "sort_order": 2
+    },
+    {
+      "filter_name": "status",
+      "filter_label": "Status",
+      "filter_label_ar": "الحالة",
+      "field_name": "status",
+      "filter_type": "select",
+      "operator": "=",
+      "options": [
+        {"value": "completed", "label": "Completed"},
+        {"value": "pending", "label": "Pending"},
+        {"value": "cancelled", "label": "Cancelled"}
+      ],
+      "is_required": false,
+      "is_multiple": true,
+      "sort_order": 3
+    },
+    {
+      "filter_name": "payment_method",
+      "filter_label": "Payment Method",
+      "filter_label_ar": "طريقة الدفع",
+      "field_name": "payment_method",
+      "filter_type": "select",
+      "operator": "=",
+      "options": [
+        {"value": "cash", "label": "Cash"},
+        {"value": "card", "label": "Card"},
+        {"value": "transfer", "label": "Bank Transfer"},
+        {"value": "cheque", "label": "Cheque"}
+      ],
+      "is_required": false,
+      "sort_order": 4
+    },
+    {
+      "filter_name": "min_amount",
+      "filter_label": "Minimum Amount",
+      "filter_label_ar": "الحد الأدنى للمبلغ",
+      "field_name": "amount",
+      "filter_type": "number",
+      "operator": ">=",
+      "is_required": false,
+      "sort_order": 5
+    }
+  ],
+
+  "aggregations": [
+    {
+      "field_name": "amount",
+      "aggregation_type": "SUM",
+      "alias": "Total Revenue",
+      "alias_ar": "إجمالي الإيرادات",
+      "format": "currency",
+      "decimal_places": 3,
+      "sort_order": 1
+    },
+    {
+      "field_name": "*",
+      "aggregation_type": "COUNT",
+      "alias": "Total Transactions",
+      "alias_ar": "إجمالي المعاملات",
+      "format": "number",
+      "decimal_places": 0,
+      "sort_order": 2
+    },
+    {
+      "field_name": "amount",
+      "aggregation_type": "AVG",
+      "alias": "Average Transaction",
+      "alias_ar": "متوسط المعاملة",
+      "format": "currency",
+      "decimal_places": 3,
+      "sort_order": 3
+    },
+    {
+      "field_name": "amount",
+      "aggregation_type": "MAX",
+      "alias": "Highest Transaction",
+      "alias_ar": "أعلى معاملة",
+      "format": "currency",
+      "decimal_places": 3,
+      "sort_order": 4
+    }
+  ],
+
+  "groupings": [
+    {
+      "field_name": "payment_method",
+      "field_label": "Payment Method",
+      "sort_order": 1,
+      "show_subtotals": true
+    },
+    {
+      "field_name": "status",
+      "field_label": "Status",
+      "sort_order": 2,
+      "show_subtotals": true
+    }
+  ],
+
+  "charts": [
+    {
+      "chart_name": "Daily Revenue Trend",
+      "chart_type": "line",
+      "x_axis_field": "created_at",
+      "y_axis_field": "amount",
+      "configuration": {
+        "colors": ["rgba(54, 162, 235, 1)"],
+        "options": {
+          "responsive": true,
+          "maintainAspectRatio": false,
+          "scales": {
+            "y": {
+              "beginAtZero": true
+            }
+          }
+        }
+      },
+      "sort_order": 1,
+      "is_visible": true
+    },
+    {
+      "chart_name": "Revenue by Payment Method",
+      "chart_type": "pie",
+      "group_by_field": "payment_method",
+      "y_axis_field": "amount",
+      "configuration": {
+        "colors": [
+          "rgba(54, 162, 235, 0.6)",
+          "rgba(255, 99, 132, 0.6)",
+          "rgba(75, 192, 192, 0.6)",
+          "rgba(255, 206, 86, 0.6)"
+        ],
+        "options": {
+          "responsive": true,
+          "plugins": {
+            "legend": {
+              "position": "bottom"
+            }
+          }
+        }
+      },
+      "sort_order": 2,
+      "is_visible": true
+    },
+    {
+      "chart_name": "Transactions by Status",
+      "chart_type": "bar",
+      "group_by_field": "status",
+      "y_axis_field": "*",
+      "configuration": {
+        "colors": ["rgba(75, 192, 192, 0.6)"],
+        "options": {
+          "responsive": true,
+          "scales": {
+            "y": {
+              "beginAtZero": true
+            }
+          }
+        }
+      },
+      "sort_order": 3,
+      "is_visible": true
+    }
+  ]
+}

@@ -1,135 +1,255 @@
-import React from "react";
-import { useNavigate } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
-import client from "@/api/client";
-import { PageHeader } from "@/components/layout/PageHeader";
-import { Button } from "@/components/ui/Button";
-import { StatCard } from "@/components/ui/StatCard";
-import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
-import { usePermissions } from "@/hooks/usePermissions";
-import { formatCurrency } from "@/utils/formatCurrency";
-import { formatDateTime } from "@/utils/formatDate";
-import { getStatusConfig } from "@/utils/statusColors";
-import { todayISO } from "@/utils/formatDate";
-import { Receipt } from "@/types/receipt";
+import React, { useState, useEffect } from 'react';
+import { dashboardApi } from '@/api/dashboard';
+import type { Dashboard } from '@/types/dashboard';
+import { LoadingSpinner } from '@/components/ui/LoadingSpinner';
+import { formatCurrency, formatNumber } from '@/utils/formatNumber';
 
-interface DailyReport {
-  total_amount: string | number;
-  receipts_count: number;
-  issued_count: number;
-  pending_count: number;
-  by_register?: Array<{ register_name: string; total: string | number; count: number }>;
+interface FundStats {
+  total_receipts: number;
+  total_amount: number;
+  pending_receipts: number;
+  period: string;
 }
 
 export default function DashboardPage() {
-  const navigate = useNavigate();
-  const { can } = usePermissions();
+  const [currentDashboard, setCurrentDashboard] = useState<Dashboard | null>(null);
+  const [fundStats, setFundStats] = useState<FundStats | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [period, setPeriod] = useState<'today' | 'week' | 'month' | 'year'>('today');
 
-  const { data: dailyData, isLoading: loadingReport } = useQuery({
-    queryKey: ["reports", "daily", todayISO()],
-    queryFn: async () => {
-      const res = await client.get(`/reports/daily?date=${todayISO()}`);
-      return (res.data?.data ?? res.data) as DailyReport;
-    },
-    refetchInterval: 60_000,
-    staleTime: 30_000,
-  });
+  // Load dashboard and statistics
+  useEffect(() => {
+    loadDashboardData();
+    loadFundStatistics();
+  }, [period]);
 
-  const { data: recentData, isLoading: loadingReceipts } = useQuery({
-    queryKey: ["receipts", "recent"],
-    queryFn: async () => {
-      const res = await client.get("/receipts?per_page=10&sort_by=created_at&order=desc");
-      const payload = res.data?.data ?? res.data;
-      return (Array.isArray(payload) ? payload : payload?.data ?? []) as Receipt[];
-    },
-    refetchInterval: 60_000,
-    staleTime: 30_000,
-  });
+  const loadDashboardData = async () => {
+    try {
+      const dashboardResult = await dashboardApi.getEffectiveDashboard();
+      setCurrentDashboard(dashboardResult.dashboard);
+    } catch (err: any) {
+      console.error('[DashboardPage] Error loading dashboard:', err);
+    }
+  };
 
-  const total    = dailyData?.total_amount  ? parseFloat(String(dailyData.total_amount)) : 0;
-  const count    = dailyData?.receipts_count ?? 0;
-  const issued   = dailyData?.issued_count  ?? 0;
-  const pending  = dailyData?.pending_count ?? 0;
-  const receipts = recentData ?? [];
+  const loadFundStatistics = async () => {
+    try {
+      const result = await dashboardApi.getFundStatistics(period);
+      setFundStats(result.statistics);
+    } catch (err: any) {
+      console.error('[DashboardPage] Error loading statistics:', err);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center min-h-screen">
+        <LoadingSpinner />
+      </div>
+    );
+  }
 
   return (
-    <div dir="rtl" style={{ padding: "24px", fontFamily: "'Noto Sans Arabic', sans-serif" }}>
-      <PageHeader title="الرئيسية">
-        {can("create-receipt") && (
-          <Button onClick={() => navigate("/receipts/create")}>+ وصل جديد</Button>
-        )}
-      </PageHeader>
-
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: "12px", marginBottom: "24px" }}>
-        <StatCard title="إجمالي اليوم (دينار)" value={loadingReport ? "..." : formatCurrency(total)} color="bg-emerald-50" />
-        <StatCard title="عدد الوصولات" value={loadingReport ? "..." : String(count)} color="bg-sky-50" />
-        <StatCard title="المرحّلة" value={loadingReport ? "..." : String(issued)} color="bg-emerald-50" />
-        <StatCard title="المعلقة" value={loadingReport ? "..." : String(pending)} color="bg-amber-50" />
-      </div>
-
-      <div style={{ background: "var(--color-background-primary)", border: "0.5px solid var(--color-border-tertiary)", borderRadius: "var(--border-radius-lg)", overflow: "hidden" }}>
-        <div style={{ padding: "14px 16px", borderBottom: "0.5px solid var(--color-border-tertiary)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <span style={{ fontSize: "14px", fontWeight: 500, color: "var(--color-text-primary)" }}>آخر الوصولات</span>
-          <button
-            onClick={() => navigate("/receipts")}
-            style={{ fontSize: "12px", color: "var(--color-text-info)", background: "none", border: "none", cursor: "pointer", fontFamily: "inherit" }}
-          >
-            عرض الكل ←
-          </button>
-        </div>
-
-        {loadingReceipts ? (
-          <div style={{ padding: "32px", textAlign: "center" }}><LoadingSpinner /></div>
-        ) : receipts.length === 0 ? (
-          <div style={{ padding: "32px", textAlign: "center", color: "var(--color-text-tertiary)", fontSize: "13px" }}>
-            لا توجد وصولات حتى الآن
+    <div className="min-h-screen bg-gray-50" dir="rtl">
+      {/* Header */}
+      <header className="bg-white border-b border-gray-200 px-6 py-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-2xl font-bold text-gray-900">
+              {currentDashboard?.name_ar || 'لوحة تحكم الصندوق'}
+            </h1>
+            {currentDashboard?.description && (
+              <p className="text-sm text-gray-500 mt-1">
+                {currentDashboard.description}
+              </p>
+            )}
           </div>
-        ) : (
-          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "13px" }}>
-            <thead>
-              <tr style={{ background: "var(--color-background-secondary)" }}>
-                {["رقم الوصل", "السجل", "المبلغ", "الحالة", "التاريخ"].map((h) => (
-                  <th key={h} style={{ padding: "10px 14px", textAlign: "right", fontWeight: 500, color: "var(--color-text-secondary)", fontSize: "12px", borderBottom: "0.5px solid var(--color-border-tertiary)" }}>
-                    {h}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {receipts.map((r) => {
-                const sc = getStatusConfig(r.status);
-                return (
-                  <tr
-                    key={r.id}
-                    onClick={() => navigate(`/receipts/${r.id}`)}
-                    style={{ cursor: "pointer", borderBottom: "0.5px solid var(--color-border-tertiary)", transition: "background .15s" }}
-                    onMouseEnter={(e) => (e.currentTarget.style.background = "var(--color-background-secondary)")}
-                    onMouseLeave={(e) => (e.currentTarget.style.background = "")}
-                  >
-                    <td style={{ padding: "10px 14px", fontFamily: "var(--font-mono)", fontWeight: 500, color: "var(--color-text-primary)" }}>
-                      {r.receipt_number}
-                    </td>
-                    <td style={{ padding: "10px 14px", color: "var(--color-text-secondary)" }}>
-                      {r.register?.name_ar ?? "—"}
-                    </td>
-                    <td style={{ padding: "10px 14px", fontFamily: "var(--font-mono)" }}>
-                      {formatCurrency(parseFloat(r.total_amount))}
-                    </td>
-                    <td style={{ padding: "10px 14px" }}>
-                      <span style={{ fontSize: "11px", fontWeight: 500, padding: "2px 8px", borderRadius: "20px", background: sc.bg, color: sc.color, border: `0.5px solid ${sc.border}` }}>
-                        {sc.label}
-                      </span>
-                    </td>
-                    <td style={{ padding: "10px 14px", color: "var(--color-text-tertiary)", fontSize: "12px" }}>
-                      {formatDateTime(r.created_at)}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        )}
-      </div>
+
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => window.location.href = '/dashboard/builder'}
+              className="px-4 py-2 text-sm text-white bg-blue-600 rounded hover:bg-blue-700 transition-colors"
+            >
+              ✏️ تعديل الداشبورد
+            </button>
+          </div>
+        </div>
+      </header>
+
+      {/* Main Content */}
+      <main className="p-6">
+        <div className="max-w-7xl mx-auto">
+          {/* Period Selector */}
+          <div className="mb-6 flex items-center justify-between">
+            <h2 className="text-lg font-bold text-gray-900">إحصائيات الصندوق</h2>
+            <div className="flex items-center gap-2">
+              {[
+                { value: 'today', label: 'اليوم' },
+                { value: 'week', label: 'الأسبوع' },
+                { value: 'month', label: 'الشهر' },
+                { value: 'year', label: 'السنة' },
+              ].map((p) => (
+                <button
+                  key={p.value}
+                  onClick={() => setPeriod(p.value as any)}
+                  className={`px-4 py-2 text-sm rounded transition-colors ${
+                    period === p.value
+                      ? 'bg-blue-600 text-white'
+                      : 'bg-white text-gray-700 hover:bg-gray-100 border border-gray-300'
+                  }`}
+                >
+                  {p.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Stats Grid */}
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
+            {/* Total Receipts */}
+            <div className="bg-white rounded-lg p-6 shadow-sm border border-gray-200 hover:shadow-md transition-shadow">
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-sm font-medium text-gray-600">إجمالي الوصولات</h3>
+                <span className="text-3xl">📋</span>
+              </div>
+              <div className="text-3xl font-bold text-gray-900 mb-2">
+                {fundStats ? formatNumber(fundStats.total_receipts) : '-'}
+              </div>
+              <div className="text-sm text-gray-500">
+                وصل صادر
+              </div>
+            </div>
+
+            {/* Total Amount */}
+            <div className="bg-white rounded-lg p-6 shadow-sm border border-gray-200 hover:shadow-md transition-shadow">
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-sm font-medium text-gray-600">إجمالي المقبوضات</h3>
+                <span className="text-3xl">💰</span>
+              </div>
+              <div className="text-3xl font-bold text-green-600 mb-2">
+                {fundStats ? formatCurrency(fundStats.total_amount) : '-'}
+              </div>
+              <div className="text-sm text-gray-500">
+                دينار عراقي
+              </div>
+            </div>
+
+            {/* Pending Receipts */}
+            <div className="bg-white rounded-lg p-6 shadow-sm border border-gray-200 hover:shadow-md transition-shadow">
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-sm font-medium text-gray-600">الوصولات المعلقة</h3>
+                <span className="text-3xl">⏳</span>
+              </div>
+              <div className="text-3xl font-bold text-amber-600 mb-2">
+                {fundStats ? formatNumber(fundStats.pending_receipts) : '-'}
+              </div>
+              <div className="text-sm text-gray-500">
+                تحتاج مراجعة
+              </div>
+            </div>
+
+            {/* Average per Receipt */}
+            <div className="bg-white rounded-lg p-6 shadow-sm border border-gray-200 hover:shadow-md transition-shadow">
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-sm font-medium text-gray-600">متوسط الوصل</h3>
+                <span className="text-3xl">📊</span>
+              </div>
+              <div className="text-3xl font-bold text-blue-600 mb-2">
+                {fundStats && fundStats.total_receipts > 0
+                  ? formatCurrency(fundStats.total_amount / fundStats.total_receipts)
+                  : '-'}
+              </div>
+              <div className="text-sm text-gray-500">
+                لكل وصل
+              </div>
+            </div>
+          </div>
+
+          {/* Quick Actions */}
+          <div className="bg-white rounded-lg p-6 shadow-sm border border-gray-200 mb-8">
+            <h2 className="text-lg font-bold text-gray-900 mb-4">إجراءات سريعة</h2>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+              <a
+                href="/receipts/create"
+                className="p-4 bg-blue-50 hover:bg-blue-100 rounded-lg transition-colors text-center"
+              >
+                <div className="text-3xl mb-2">➕</div>
+                <div className="font-medium text-blue-900">وصل جديد</div>
+              </a>
+
+              <a
+                href="/receipts"
+                className="p-4 bg-green-50 hover:bg-green-100 rounded-lg transition-colors text-center"
+              >
+                <div className="text-3xl mb-2">📋</div>
+                <div className="font-medium text-green-900">الوصولات</div>
+              </a>
+
+              <a
+                href="/registers"
+                className="p-4 bg-purple-50 hover:bg-purple-100 rounded-lg transition-colors text-center"
+              >
+                <div className="text-3xl mb-2">🗂️</div>
+                <div className="font-medium text-purple-900">السجلات</div>
+              </a>
+
+              <a
+                href="/reports"
+                className="p-4 bg-amber-50 hover:bg-amber-100 rounded-lg transition-colors text-center"
+              >
+                <div className="text-3xl mb-2">📈</div>
+                <div className="font-medium text-amber-900">التقارير</div>
+              </a>
+            </div>
+          </div>
+
+          {/* Dashboard Sections */}
+          {currentDashboard?.sections && currentDashboard.sections.length > 0 ? (
+            currentDashboard.sections.map((section) => (
+              <div key={section.id} className="mb-8">
+                <h3 className="text-lg font-bold text-gray-900 mb-4">{section.name_ar}</h3>
+                <div className="grid grid-cols-12 gap-4">
+                  {section.widgets?.map((widget) => (
+                    <div
+                      key={widget.id}
+                      className="bg-white rounded-lg p-4 shadow-sm border border-gray-200"
+                      style={{
+                        gridColumn: `span ${widget.grid_width || 6}`,
+                      }}
+                    >
+                      <div className="text-center text-gray-500">
+                        <div className="text-2xl mb-2">
+                          {widget.widget_type === 'kpi_card' && '📊'}
+                          {widget.widget_type === 'chart' && '📈'}
+                          {widget.widget_type === 'table' && '📋'}
+                          {widget.widget_type === 'list' && '📝'}
+                        </div>
+                        <div className="font-medium">{widget.name_ar}</div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))
+          ) : (
+            <div className="bg-white rounded-lg p-12 text-center shadow-sm border border-gray-200">
+              <div className="text-6xl mb-4">🎨</div>
+              <h3 className="text-xl font-bold text-gray-700 mb-2">داشبوردك الشخصي</h3>
+              <p className="text-gray-500 mb-6">
+                قم بتخصيص الداشبورد الخاص بك لعرض الإحصائيات التي تهمك
+              </p>
+              <a
+                href="/dashboard/builder"
+                className="inline-block px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+              >
+                تخصيص الداشبورد
+              </a>
+            </div>
+          )}
+        </div>
+      </main>
     </div>
   );
 }

@@ -531,60 +531,24 @@ class ValidationEngine
     }
 
     /**
-     * SQL Validation: Execute raw SQL query.
+     * SQL Validation: DISABLED for security.
+     * 
+     * Raw SQL execution poses critical injection risk.
+     * Use query_builder validation type instead.
      */
     protected function checkSql(ValidationRule $rule, array $values): bool
     {
-        if (empty($rule->sql_query) || empty($rule->sql_condition)) {
-            return false;
-        }
+        // SECURITY: Raw SQL validation is disabled due to injection risk.
+        // Migrate to query_builder validation type instead.
+        \Log::warning('SQL validation rule attempted but is disabled for security', [
+            'rule_id' => $rule->id,
+            'rule_name' => $rule->name,
+        ]);
 
-        // Resolve placeholders in SQL
-        $sql = preg_replace_callback('/\{\{([\w-]+)\}\}/', function ($matches) use ($values) {
-            $val = $values[$matches[1]] ?? '';
-            return DB::getPdo()->quote((string) $val);
-        }, $rule->sql_query);
-
-        try {
-            $result = DB::selectOne($sql);
-
-            // Parse condition: "count = 0" or "total > 5"
-            $conditionParts = explode('=', $rule->sql_condition, 2);
-            if (count($conditionParts) !== 2) {
-                $conditionParts = preg_split('/(>=|<=|!=|>|<)/', $rule->sql_condition, 2, PREG_SPLIT_DELIM_CAPTURE);
-            }
-
-            $field = trim($conditionParts[0]);
-            $expectedValue = trim($conditionParts[1] ?? '');
-
-            // Get actual value from result
-            $actualValue = null;
-            foreach ((array) $result as $key => $val) {
-                if (stripos($key, $field) !== false || stripos($field, $key) !== false) {
-                    $actualValue = $val;
-                    break;
-                }
-            }
-
-            if ($actualValue === null) {
-                return false;
-            }
-
-            // Check if condition is met
-            $conditionMet = match (true) {
-                str_contains($rule->sql_condition, '>=') => $actualValue >= (float) $expectedValue,
-                str_contains($rule->sql_condition, '<=') => $actualValue <= (float) $expectedValue,
-                str_contains($rule->sql_condition, '!=') => $actualValue != (float) $expectedValue,
-                str_contains($rule->sql_condition, '>') => $actualValue > (float) $expectedValue,
-                str_contains($rule->sql_condition, '<') => $actualValue < (float) $expectedValue,
-                default => $actualValue == (float) $expectedValue,
-            };
-
-            // Validation fails if condition is NOT met
-            return !$conditionMet;
-        } catch (\Exception $e) {
-            return false; // On error, don't fail validation
-        }
+        // Fail closed - don't allow validation to pass with disabled rule
+        throw new \RuntimeException(
+            'SQL validation is disabled for security. Please use query_builder validation type instead.'
+        );
     }
 
     /**
@@ -597,180 +561,299 @@ class ValidationEngine
      */
     protected function checkFieldExistence(ValidationRule $rule, array $values): array
     {
-        $triggerConditions = $rule->trigger_conditions ?? [];
+        try {
+            \Log::info('[checkFieldExistence] Starting', [
+                'rule_id' => $rule->id,
+                'rule_name' => $rule->name,
+                'values_keys' => array_keys($values),
+            ]);
+            
+            // Check both trigger_conditions column AND rule_config['conditions']
+            $triggerConditions = $rule->trigger_conditions ?? [];
+            
+            // Support rule_config['conditions'] format (used by workflow builder)
+            if (empty($triggerConditions)) {
+                $ruleConfig = $rule->rule_config ?? [];
+                if (!empty($ruleConfig['conditions']) && is_array($ruleConfig['conditions'])) {
+                    $triggerConditions = $ruleConfig['conditions'];
+                    \Log::info('[checkFieldExistence] Using rule_config conditions', [
+                        'conditions_count' => count($triggerConditions),
+                    ]);
+                }
+            }
 
-        // Support legacy single trigger_field_id
-        if (empty($triggerConditions) && $rule->trigger_field_id) {
-            $triggerConditions = [[
-                'field_id' => $rule->trigger_field_id,
-                'operator' => 'exact',
-                'value' => '',
-            ]];
-        }
+              // Support legacy single trigger_field_id
+              if (empty($triggerConditions) && $rule->trigger_field_id) {
+                  $triggerConditions = [[
+                      'field_id' => $rule->trigger_field_id,
+                      'operator' => 'exact',
+                      'value' => '',
+                  ]];
+              }
+              
+              // Get rule actions
+              $ruleActions = $rule->rule_config['actions'] ?? $rule->actions ?? [];
+              
+              // If no trigger conditions, execute actions unconditionally
+              if (empty($triggerConditions)) {
+                  if (!empty($ruleActions)) {
+                      // Execute actions using EnterpriseRuleEngine to get proper field_effects
+                      $engine = new EnterpriseRuleEngine();
+                      $finalValues = $values;
+                      $finalFieldStates = [];
+                      // Use original values for calculation, not previously calculated values
+                      $actionResults = $engine->executeActions($ruleActions, $values, $finalValues, $finalFieldStates);
+                      
+                      return [
+                          'rule_id' => $rule->id,
+                          'rule_name' => $rule->name,
+                          'validation_type' => $rule->validation_type,
+                          'status' => 'passed',
+                          'field_effects' => $actionResults['field_effects'] ?? [],
+                          'executed_actions' => $actionResults['executed'] ?? [],
+                      ];
+                  }
+                  
+                  // No conditions and no actions - skip
+                  return [
+                      'rule_id' => $rule->id,
+                      'rule_name' => $rule->name,
+                      'validation_type' => $rule->validation_type,
+                      'status' => 'skipped',
+                      'reason' => 'no_trigger_conditions',
+                  ];
+              }
+  
+              // Evaluate all trigger conditions - ALL must match
+            $allConditionsMet = true;
+            $matchedConditions = [];
 
-        if (empty($triggerConditions)) {
+            \Log::info('[checkFieldExistence] Evaluating conditions', [
+                'conditions_count' => count($triggerConditions),
+            ]);
+
+            foreach ($triggerConditions as $condition) {
+                $fieldId = $condition['field_id'] ?? null;
+                $operator = $condition['operator'] ?? 'exact';
+                $expectedValue = $condition['value'] ?? null;
+                $actualValue = $values[$fieldId] ?? null;
+
+                if (!$fieldId) continue;
+
+                $conditionMet = false;
+
+                switch ($operator) {
+                    case 'empty':
+                        $conditionMet = ($actualValue === null || $actualValue === '');
+                        break;
+                    case 'not_empty':
+                        $conditionMet = ($actualValue !== null && $actualValue !== '');
+                        break;
+                    case 'exact':
+                        $conditionMet = ((string) $actualValue === (string) $expectedValue);
+                        break;
+                    case 'not_equals':
+                        $conditionMet = ((string) $actualValue !== (string) $expectedValue);
+                        break;
+                    case 'contains':
+                        $conditionMet = str_contains((string) $actualValue, (string) $expectedValue);
+                        break;
+                    case 'starts_with':
+                        $conditionMet = str_starts_with((string) $actualValue, (string) $expectedValue);
+                        break;
+                    case 'ends_with':
+                        $conditionMet = str_ends_with((string) $actualValue, (string) $expectedValue);
+                        break;
+                    case 'greater_than':
+                        $conditionMet = (is_numeric($actualValue) && is_numeric($expectedValue) && ((float) $actualValue > (float) $expectedValue));
+                        break;
+                    case 'less_than':
+                        $conditionMet = (is_numeric($actualValue) && is_numeric($expectedValue) && ((float) $actualValue < (float) $expectedValue));
+                        break;
+                    case 'greater_than_or_equal':
+                    case 'greater_or_equal':
+                        $conditionMet = (is_numeric($actualValue) && is_numeric($expectedValue) && ((float) $actualValue >= (float) $expectedValue));
+                        break;
+                    case 'less_than_or_equal':
+                    case 'less_or_equal':
+                        $conditionMet = (is_numeric($actualValue) && is_numeric($expectedValue) && ((float) $actualValue <= (float) $expectedValue));
+                        break;
+                }
+
+                \Log::info('[checkFieldExistence] Condition evaluated', [
+                    'field_id' => $fieldId,
+                    'operator' => $operator,
+                    'expected' => $expectedValue,
+                    'actual' => $actualValue,
+                    'met' => $conditionMet,
+                ]);
+
+                if (!$conditionMet) {
+                    $allConditionsMet = false;
+                    break;
+                }
+
+                $matchedConditions[] = [
+                    'field_id' => $fieldId,
+                    'value' => $actualValue,
+                ];
+            }
+            
+            \Log::info('[checkFieldExistence] All conditions met?', [
+                'allConditionsMet' => $allConditionsMet,
+            ]);
+
+            if (!$allConditionsMet) {
+                return [
+                    'rule_id' => $rule->id,
+                    'rule_name' => $rule->name,
+                    'validation_type' => 'field_existence_check',
+                    'status' => 'skipped',
+                    'reason' => 'trigger_conditions_not_met',
+                ];
+            }
+
+            // Conditions met - check if rule has actions to execute
+            if (!empty($ruleActions)) {
+                \Log::info('[checkFieldExistence] Executing actions', [
+                    'actions_count' => count($ruleActions),
+                    'actions' => $ruleActions,
+                ]);
+                
+                // Execute actions using EnterpriseRuleEngine to get proper field_effects
+                $engine = new EnterpriseRuleEngine();
+                $finalValues = $values;
+                $finalFieldStates = [];
+                // Use original values for calculation, not previously calculated values
+                $actionResults = $engine->executeActions($ruleActions, $values, $finalValues, $finalFieldStates);
+                
+                \Log::info('[checkFieldExistence] Actions executed', [
+                    'executed' => $actionResults['executed'] ?? [],
+                    'field_effects' => $actionResults['field_effects'] ?? [],
+                ]);
+                
+                return [
+                    'rule_id' => $rule->id,
+                    'rule_name' => $rule->name,
+                    'validation_type' => $rule->validation_type,
+                    'status' => 'passed',
+                    'field_effects' => $actionResults['field_effects'] ?? [],
+                    'executed_actions' => $actionResults['executed'] ?? [],
+                ];
+            }
+
+            // No actions - continue with legacy database lookup behavior
+            $routeConfig = $rule->route_config ?? [];
+            $lookupConfig = $rule->lookup_config ?? [];
+            $databaseColumn = $lookupConfig['database_column'] ?? null;
+
+            if (!$rule->target_register_id || !$databaseColumn) {
+                return [
+                    'rule_id' => $rule->id,
+                    'rule_name' => $rule->name,
+                    'validation_type' => 'field_existence_check',
+                    'status' => 'error',
+                    'message' => 'إعدادات البحث غير مكتملة',
+                ];
+            }
+
+            // Build lookup query based on strategy
+            $strategy = $lookupConfig['lookup_strategy'] ?? 'exact';
+            $query = DB::table('records')
+                ->where('register_id', $rule->target_register_id)
+                ->whereNull('deleted_at');
+
+            // Use the first matched condition's value for the lookup
+            $primaryCondition = $matchedConditions[0] ?? null;
+            $triggerValue = $primaryCondition ? $primaryCondition['value'] : null;
+
+            if ($triggerValue !== null) {
+                // Use SQLite-compatible JSON extraction
+                // SQLite uses json_extract(data, '$.key') or data->'$.key'
+                $jsonPath = '$.' . $databaseColumn;
+                
+                switch ($strategy) {
+                    case 'exact':
+                        $query->whereRaw("json_extract(data, ?) = ?", [$jsonPath, (string) $triggerValue]);
+                        break;
+                    case 'contains':
+                        $query->whereRaw("json_extract(data, ?) like ?", [$jsonPath, '%' . (string) $triggerValue . '%']);
+                        break;
+                    case 'starts_with':
+                        $query->whereRaw("json_extract(data, ?) like ?", [$jsonPath, (string) $triggerValue . '%']);
+                        break;
+                    case 'ends_with':
+                        $query->whereRaw("json_extract(data, ?) like ?", [$jsonPath, '%' . (string) $triggerValue]);
+                        break;
+                }
+            }
+
+            // Additional conditions from target_fields
+            if (!empty($rule->target_fields)) {
+                foreach ($rule->target_fields as $fieldConfig) {
+                    $wfFieldId = $fieldConfig['workflow_field_id'] ?? null;
+                    $dbColumn = $fieldConfig['register_field_name'] ?? null;
+                    $val = $values[$wfFieldId] ?? null;
+                    if ($val !== null && $dbColumn !== null) {
+                        $query->whereRaw("data->>? = ?", [$dbColumn, (string) $val]);
+                    }
+                }
+            }
+
+            $existingRecord = $query->first();
+
+            if ($existingRecord) {
+                // Record found → route decision
+                $onMatch = $routeConfig['on_match'] ?? [];
+                $action = $onMatch['action'] ?? 'warn';
+
+                return [
+                    'rule_id' => $rule->id,
+                    'rule_name' => $rule->name,
+                    'validation_type' => 'field_existence_check',
+                    'status' => 'found',
+                    'decision' => $action,
+                    'existing_record' => [
+                        'id' => $existingRecord->id,
+                        'register_id' => $existingRecord->register_id,
+                        'created_at' => $existingRecord->created_at ?? null,
+                    ],
+                    'message' => $onMatch['message_ar'] ?? 'تم العثور على سجل سابق مرتبط بهذه القيمة',
+                    'actions' => $onMatch['actions'] ?? ['view_existing', 'continue_update', 'start_renewal'],
+                    'target_workflow_id' => $onMatch['target_workflow_id'] ?? null,
+                    'target_step_id' => $onMatch['target_step_id'] ?? null,
+                    'field_effects' => $rule->field_effects ?? [],
+                    'existing_record_data' => is_string($existingRecord->data) ? json_decode($existingRecord->data, true) : ($existingRecord->data ?? []),
+                ];
+            }
+
+            // Record not found → continue
+            $onNotFound = $routeConfig['on_not_found'] ?? [];
+
             return [
                 'rule_id' => $rule->id,
                 'rule_name' => $rule->name,
                 'validation_type' => 'field_existence_check',
-                'status' => 'skipped',
-                'reason' => 'no_trigger_conditions',
+                'status' => 'not_found',
+                'decision' => 'continue_workflow',
+                'message' => $onNotFound['message_ar'] ?? null,
+                'field_effects' => [],
             ];
-        }
-
-        // Evaluate all trigger conditions - ALL must match
-        $allConditionsMet = true;
-        $matchedConditions = [];
-
-        foreach ($triggerConditions as $condition) {
-            $fieldId = $condition['field_id'] ?? null;
-            $operator = $condition['operator'] ?? 'exact';
-            $expectedValue = $condition['value'] ?? null;
-            $actualValue = $values[$fieldId] ?? null;
-
-            if (!$fieldId) continue;
-
-            $conditionMet = false;
-
-            switch ($operator) {
-                case 'empty':
-                    $conditionMet = ($actualValue === null || $actualValue === '');
-                    break;
-                case 'not_empty':
-                    $conditionMet = ($actualValue !== null && $actualValue !== '');
-                    break;
-                case 'exact':
-                    $conditionMet = ((string) $actualValue === (string) $expectedValue);
-                    break;
-                case 'not_equals':
-                    $conditionMet = ((string) $actualValue !== (string) $expectedValue);
-                    break;
-                case 'contains':
-                    $conditionMet = str_contains((string) $actualValue, (string) $expectedValue);
-                    break;
-                case 'starts_with':
-                    $conditionMet = str_starts_with((string) $actualValue, (string) $expectedValue);
-                    break;
-                case 'ends_with':
-                    $conditionMet = str_ends_with((string) $actualValue, (string) $expectedValue);
-                    break;
-            }
-
-            if (!$conditionMet) {
-                $allConditionsMet = false;
-                break;
-            }
-
-            $matchedConditions[] = [
-                'field_id' => $fieldId,
-                'value' => $actualValue,
-            ];
-        }
-
-        if (!$allConditionsMet) {
-            return [
+        } catch (\Exception $e) {
+            \Log::error('checkFieldExistence failed', [
                 'rule_id' => $rule->id,
                 'rule_name' => $rule->name,
-                'validation_type' => 'field_existence_check',
-                'status' => 'skipped',
-                'reason' => 'trigger_conditions_not_met',
-            ];
-        }
-
-        $routeConfig = $rule->route_config ?? [];
-        $lookupConfig = $rule->lookup_config ?? [];
-        $databaseColumn = $lookupConfig['database_column'] ?? null;
-
-        if (!$rule->target_register_id || !$databaseColumn) {
+                'exception' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
+            ]);
             return [
                 'rule_id' => $rule->id,
                 'rule_name' => $rule->name,
                 'validation_type' => 'field_existence_check',
                 'status' => 'error',
-                'message' => 'إعدادات البحث غير مكتملة',
+                'message' => 'خطأ في التحقق: ' . $e->getMessage(),
             ];
         }
-
-        // Build lookup query based on strategy
-        $strategy = $lookupConfig['lookup_strategy'] ?? 'exact';
-        $query = DB::table('records')
-            ->where('register_id', $rule->target_register_id)
-            ->whereNull('deleted_at');
-
-        // Use the first matched condition's value for the lookup
-        $primaryCondition = $matchedConditions[0] ?? null;
-        $triggerValue = $primaryCondition ? $primaryCondition['value'] : null;
-
-        if ($triggerValue !== null) {
-            $jsonColumn = "data->>{$databaseColumn}";
-
-            switch ($strategy) {
-                case 'exact':
-                    $query->whereRaw("$jsonColumn = ?", [(string) $triggerValue]);
-                    break;
-                case 'contains':
-                    $query->whereRaw("$jsonColumn like ?", ['%' . (string) $triggerValue . '%']);
-                    break;
-                case 'starts_with':
-                    $query->whereRaw("$jsonColumn like ?", [(string) $triggerValue . '%']);
-                    break;
-                case 'ends_with':
-                    $query->whereRaw("$jsonColumn like ?", ['%' . (string) $triggerValue]);
-                    break;
-            }
-        }
-
-        // Additional conditions from target_fields
-        if (!empty($rule->target_fields)) {
-            foreach ($rule->target_fields as $fieldConfig) {
-                $wfFieldId = $fieldConfig['workflow_field_id'] ?? null;
-                $dbColumn = $fieldConfig['register_field_name'] ?? null;
-                $val = $values[$wfFieldId] ?? null;
-                if ($val !== null && $dbColumn !== null) {
-                    $query->whereRaw("data->>? = ?", [$dbColumn, (string) $val]);
-                }
-            }
-        }
-
-        $existingRecord = $query->first();
-
-        if ($existingRecord) {
-            // Record found → route decision
-            $onMatch = $routeConfig['on_match'] ?? [];
-            $action = $onMatch['action'] ?? 'warn';
-
-            return [
-                'rule_id' => $rule->id,
-                'rule_name' => $rule->name,
-                'validation_type' => 'field_existence_check',
-                'status' => 'found',
-                'decision' => $action,
-                'existing_record' => [
-                    'id' => $existingRecord->id,
-                    'register_id' => $existingRecord->register_id,
-                    'created_at' => $existingRecord->created_at ?? null,
-                ],
-                'message' => $onMatch['message_ar'] ?? 'تم العثور على سجل سابق مرتبط بهذه القيمة',
-                'actions' => $onMatch['actions'] ?? ['view_existing', 'continue_update', 'start_renewal'],
-                'target_workflow_id' => $onMatch['target_workflow_id'] ?? null,
-                'target_step_id' => $onMatch['target_step_id'] ?? null,
-                'field_effects' => $rule->field_effects ?? [],
-                'existing_record_data' => is_string($existingRecord->data) ? json_decode($existingRecord->data, true) : ($existingRecord->data ?? []),
-            ];
-        }
-
-        // Record not found → continue
-        $onNotFound = $routeConfig['on_not_found'] ?? [];
-
-        return [
-            'rule_id' => $rule->id,
-            'rule_name' => $rule->name,
-            'validation_type' => 'field_existence_check',
-            'status' => 'not_found',
-            'decision' => 'continue_workflow',
-            'message' => $onNotFound['message_ar'] ?? null,
-            'field_effects' => [],
-        ];
     }
 
     /**

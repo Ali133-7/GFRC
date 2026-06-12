@@ -17,11 +17,11 @@ class ValidationRule extends Model
     protected $fillable = [
         'workflow_version_id', 'name', 'description', 'validation_type', 'category',
         'target_register_id', 'trigger_field_id', 'trigger_conditions', 'target_fields', 'query_conditions',
-        'sql_query', 'sql_condition', 'route_config', 'lookup_config', 'field_effects', 'rule_config',
+        'sql_query', 'sql_condition', 'route_config', 'lookup_config', 'field_effects',
         'response_type', 'error_message_ar', 'error_message_en',
         'confirm_message_ar', 'confirm_message_en',
-        'expectation',
-        'sort_order', 'priority', 'is_active',
+        'sort_order', 'is_active', 'realtime_enabled',
+        'rule_config', 'priority',
     ];
 
     protected $casts = [
@@ -34,9 +34,19 @@ class ValidationRule extends Model
         'expectation' => 'string',
         'rule_config' => 'array',
         'is_active' => 'boolean',
+        'realtime_enabled' => 'boolean',
         'sort_order' => 'integer',
         'priority' => 'integer',
     ];
+
+    /**
+     * Mutator to ensure realtime_enabled is always 0 or 1, not NULL.
+     * This fixes SQLite's boolean handling issue.
+     */
+    public function setRealtimeEnabledAttribute($value): void
+    {
+        $this->attributes['realtime_enabled'] = $value ? 1 : 0;
+    }
 
     protected static function boot(): void
     {

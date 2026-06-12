@@ -19,6 +19,7 @@ import { CSS } from "@dnd-kit/utilities";
 import type { WorkflowRule, RuleCase, RuleAction, WorkflowField } from "@/types/workflow";
 import { workflowVersionApi } from "@/api/workflows";
 import { useOfficialFees } from "@/hooks/useFees";
+import { formatNumber } from "@/utils/formatNumber";
 import type { OfficialFee } from "@/api/fees";
 import { fieldKey, findFieldByKey, fieldDisplayLabel } from "./fieldKey";
 
@@ -437,13 +438,13 @@ function ActionPill({
                   <option value="">اختر الرسم...</option>
                   {officialFees?.map((fee) => (
                     <option key={fee.id} value={fee.fee_code}>
-                      {fee.name_ar} ({fee.fee_code}) — {fee.amount.toLocaleString("en")} د.ع
+                      {fee.name_ar} ({fee.fee_code}) — {formatNumber(fee.amount)} د.ع
                     </option>
                   ))}
                 </select>
                 {action.fee_code && (
                   <div style={{ fontSize: "11px", color: "var(--color-text-success)", marginTop: "4px" }}>
-                    المبلغ: {(action.value ?? 0).toLocaleString("en")} د.ع
+                    المبلغ: {formatNumber(String(action.value ?? 0))} د.ع
                   </div>
                 )}
               </div>
@@ -549,6 +550,7 @@ export default function CaseRuleBuilder({
 }: CaseRuleBuilderProps) {
   const [name, setName] = useState(rule?.name ?? "");
   const [description, setDescription] = useState(rule?.description ?? "");
+  const [realtimeEnabled, setRealtimeEnabled] = useState(rule?.realtime_enabled ?? true);
   const [triggerFieldId, setTriggerFieldId] = useState(rule?.trigger_field_id ?? "");
   const [matchMode, setMatchMode] = useState(rule?.match_mode ?? "exact");
   const [cases, setCases] = useState<RuleCase[]>(rule?.cases ?? [{ value: "", actions: [], priority: 100 }]);
@@ -625,6 +627,7 @@ export default function CaseRuleBuilder({
         actions: [],
         sort_order: rule?.sort_order ?? 0,
         is_active: true,
+        realtime_enabled: realtimeEnabled,
       };
 
       if (rule?.id) {
@@ -701,6 +704,21 @@ export default function CaseRuleBuilder({
           ))}
         </div>
       )}
+
+      {/* Real-time execution checkbox */}
+      <div style={{ padding: "10px 18px", background: "var(--color-background-secondary)", borderBottom: "0.5px solid var(--color-border-tertiary)" }}>
+        <label style={{ display: "flex", alignItems: "center", gap: "8px", cursor: "pointer" }}>
+          <input
+            type="checkbox"
+            checked={realtimeEnabled}
+            onChange={(e) => setRealtimeEnabled(e.target.checked)}
+            style={{ width: "18px", height: "18px" }}
+          />
+          <span style={{ fontSize: "13px", fontWeight: 500, color: "var(--color-text-primary)" }}>
+            ☑ تنفيذ فوري (Real-time execution)
+          </span>
+        </label>
+      </div>
 
       {/* Simulation panel */}
       {simMode && triggerField && (

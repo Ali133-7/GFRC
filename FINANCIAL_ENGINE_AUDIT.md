@@ -1,159 +1,366 @@
-# FINANCIAL_ENGINE_AUDIT — Phase 9
+# FINANCIAL ENGINE FORENSIC AUDIT
 
-**التاريخ:** 2026-06-07
-**النطاق:** تتبّع المسار المالي الحيّ من إدخال القيم حتى `total_amount` في الـ response.
-**الطريقة:** قراءة الكود الفعلي + تشغيل الاختبارات. كل ادعاء موثّق بـ `file:line`.
-
----
-
-## ملخّص تنفيذي (TL;DR)
-
-| السؤال | الجواب القصير |
-|--------|----------------|
-| أين تصبح المجاميع صفراً؟ | **ليس** في `FeeEngine::resolve()` (سليم)، **ولا** في `FinancialCalculationPipeline` (كود ميّت غير موصول). المسار الحيّ هو `WorkflowExecutionService::calculateItems()`. الصفر المحتمل مصدره **عدم تطابق مفتاح الحقل** للرسوم القادمة من *rule actions*. |
-| fee_code للاختبار؟ | `GOV-001` — مبذور في `TestCase::createOfficialFee()` بنسخة نشطة `15.500`، `effective_from = now()->subYear()`، `effective_to = null`. يُحَلّ بنجاح عبر المسارين. |
-| هل `calculate` يصل إلى `calculated_items`؟ | نعم، السلسلة **متّسقة** end-to-end — *شرط* تطابق `field_id`. لكن `calculateExpression()` يُعيد **float** (مخالفة لمبدأ "لا float"). |
-| شكل `calculated_items`؟ | `array` (افتراضي `[]`)، يُملأ للحقول المالية/الرسوم. يصبح `[]`/صفر عند انعدام حقل مالي أو عند فقدان مفتاح الإجراء. |
-
-> **اكتشاف محوري:** `FinancialCalculationPipeline.php` (الملف الجديد) **غير موصول بأي شيء** — مرجعيّته الوحيدة هي اختباره الخاص. ينجح في اختباراته معزولاً لكنه **لا يُشغَّل في مسار الوصل الحقيقي**. **[تم حذفه ككود ميّت — 2026-06-07].**
+**Date:** 2026-06-10
+**Auditor:** Principal Workflow Systems Architect
+**Scope:** Fee library, fee versions, set_fee, calculate, apply_discount, totals, receipt generation
 
 ---
 
-## ✅ إثبات تجريبي (2026-06-07) — الجذر مؤكَّد
+## EXECUTIVE SUMMARY
 
-`tests/Feature/FinancialEngineZeroTotalTest.php` يقود المسار الحيّ عبر الخدمة:
-
-| السيناريو | `total_amount` | الحكم |
-|-----------|----------------|-------|
-| `set_fee` + `target_field_id = register_field_id` | **15.500** | ✅ سليم |
-| `calculate` + `target_field_id = register_field_id` | **75.000** | ✅ سليم |
-| `set_fee` + `target_field_id = workflow_field.id` (خطأ تأليف) | **0.000، items=0** | ❌ **إسقاط صامت** |
-
-**الخلاصة:** المحرك سليم تحت الاتفاقية (`target_field_id = register_field_id`). الصفر يحدث **حصراً** حين تستهدف الـ rule مُعرِّف `workflow_field.id` بدل `register_field_id` — فلا يطابق أي حقل في `calculateItems` → يسقط البند **بصمت** (لا خطأ/تحذير). هذا انتهاك مباشر لمبدأ **"لا state corruption صامت"**.
+The financial engine uses BC Math exclusively for calculations with a Shunting-Yard expression evaluator. The architecture is fundamentally sound for financial precision but contains **3 critical issues** that could produce wrong financial amounts in production.
 
 ---
 
-## 🔧 الإصلاح المُنفَّذ (2026-06-07)
+## 1. FEE LIBRARY ANALYSIS
 
-1. **تطبيع المفتاح في `calculateItems`** [WorkflowExecutionService.php]: خريطة aliases تقبل `register_field_id` و `workflow_field.id` و `custom_<id>` → المفتاح القانوني. الـ rule المؤلَّفة على أي مُعرِّف تُطابَق الآن. **بلا migration بيانات.**
-2. **fail-closed على الإسقاط الصامت:** إجراء `set_fee`/`calculate` بمبلغ>0 يستهدف حقلاً **مجهولاً للنسخة بأكملها** → يرمي `FinancialIntegrityException` (422، `error_code: FINANCIAL_INTEGRITY_ERROR`). أمّا الحقل في **خطوة أخرى** فيُؤجَّل لحسابها (ليس خطأً).
-3. **إصلاح float:** `calculateExpression()` يُعيد الآن سلسلة BC (FormulaEvaluator يُعيد string أصلاً) بدل `(float)`.
-4. **حذف الكود الميّت:** `FinancialCalculationPipeline` + اختباره.
+### 1.1 Fee Data Model
 
-**الاختبارات:** `tests/Feature/FinancialEngineZeroTotalTest.php` (4 اختبارات: set_fee/calculate سليم، تطبيع workflow_field.id، fail-closed). **الإجمالي 358/358 يمرّ، بلا تراجعات.**
-
----
-
-## 1. أين بالضبط تصبح المجاميع صفراً؟
-
-### المسار الحيّ الفعلي
 ```
-Controller::submitStep()  [WorkflowExecutionController.php:88-122]
-   ↓
-Service::submitStep()
-   ├── enterpriseEngine->execute()                    ← ينتج field_effects
-   ├── bridge: field_effects → $allActions            [WorkflowExecutionService.php:236-262]
-   ├── calculateItems($visibleFields, $values, $allActions)  [902-1026]  ← مكان بناء البنود
-   ├── sumItems($calculatedItems)                     [1080-1089]        ← مجموع الخطوة
-   ├── newTotal = bcadd(replayedState, stepTotal)     [305-306]
-   └── persist total_amount = $newTotal               [339]
+OfficialFee (fee_code, name_ar, name_en, amount, effective_from, effective_to, is_active)
+    ↓ (1:N)
+FeeVersion (fee_id, version, amount, effective_from, effective_to, change_reason)
 ```
 
-### الحُكم على كل مشتبَه
+### 1.2 Fee Resolution Flow
 
-**(أ) `FeeEngine::resolve()` — سليم.** [FeeEngine.php:53-67] يُرجِع النسخة النشطة الصحيحة (`effective_from <= asOf AND (effective_to IS NULL OR >= asOf)`). مسار `set_fee` يستخدم `scopeActiveAt()` [FeeVersion.php:66-75] وهو مطابق ومضبوط. **ليس مصدر الصفر.**
-
-**(ب) `FinancialCalculationPipeline` — كود ميّت.** غير محقون في `WorkflowExecutionService` (الـ constructor لا يحتويه [WorkflowExecutionService.php:24-36])، وغير مسجَّل في `bootstrap/` أو `config/`. **لا يؤثر على أي وصل حالياً.** (به عيب كامن مُوثّق في §1-ج للمستقبل.)
-
-**(ج) `calculateItems()` — المسار الحيّ، وهنا الخطر الحقيقي:**
-
-1. **عدم تطابق مفتاح الحقل (المشتبَه الأول):**
-   - البنود تُفهرَس بـ `register_field_id`: `$fieldId = $field->register_field_id ?? 'custom_'.$field->id` [930].
-   - إجراءات الرسوم تُلتقَط عبر نفس المفتاح: `$actionsByField[$fieldId]` [932].
-   - لكن الـ effect يحمل `field_id` **كما كُتب في إعداد الـ rule مباشرة**: `$fieldId = $action['field_id']` [EnterpriseRuleEngine.php:693] → `'field_id' => $fieldId` في الـ effect [734-738, 866-868].
-   - **النتيجة:** إذا أُنشئت الـ rule على `workflow_field.id` (أو أي مُعرِّف ≠ `register_field_id`)، فإن `set_fee`/`calculate` **لا يطابق أي حقل** في `calculateItems` → `$amount` يبقى `'0'` [950] → البند يسقط → **المجموع صفر**.
-   - الحقول ذات `fee_code` الثابت **محصّنة** (تُحَلّ مباشرة [962-963] دون مرور بالإجراءات)، لذا يظهر الصفر **تحديداً للرسوم المدفوعة عبر rule actions**.
-
-2. **شرط الإدراج في المجموع** [993-1001]: البند يُدرَج فقط إذا `amountIsPositive || textValue !== null`. لو فشل (أ) فالـ amount صفر؛ وإن كان الحقل بلا `text_value` يسقط البند كلياً.
-
-### في الـ response؟
-- `total_amount` **يُسطَّح** للـ frontend [WorkflowExecutionController.php:105]. لا فقدان هنا.
-- لكن `financial_calculation_trace` يُحسَب [WorkflowExecutionService.php:370] و**لا يُعيده الـ controller** → الـ frontend بلا أثر لتشخيص الصفر.
-- لا وجود لـ `grand_total` في response الخطوة إطلاقاً.
-
----
-
-## 2. fee_code للاختبار + صحّة النسخة الزمنية
-
-- **fee_code:** `GOV-001`.
-- **المصدر:** [tests/TestCase.php:175-200] `createOfficialFee()`:
-  - `OfficialFee{ fee_code:'GOV-001', is_active:true }`
-  - `FeeVersion{ amount:'15.500', version:1, effective_from: now()->subYear(), effective_to: null }`
-- **التحقق:** كلا المسارين يحلّانه:
-  - `FeeEngine::resolve('GOV-001')` → نسخة نشطة ✅
-  - `set_fee`: `OfficialFee::where('fee_code','GOV-001')->where('is_active',true)` ثم `feeVersions()->activeAt()` ✅
-- **الخلاصة:** نعم، توجد نسخة نشطة بتاريخ صحيح. `GOV-001` مرجع اختبار صالح.
-
----
-
-## 3. هل `calculate`/`set_fee` تصل إلى `calculated_items`؟
-
-**نعم — السلسلة متّسقة، بشرط تطابق `field_id` (§1-ج).** خريطة المفاتيح:
-
-| الإجراء | يصدره EnterpriseRuleEngine كـ | الجسر يقرأ | calculateItems يستهلك |
-|---------|------------------------------|------------|------------------------|
-| `calculate` | `result` [738] | `$effect['result']`→`resolved_amount` [249] | `act==='calculate'` → `resolved_amount` [950] |
-| `set_fee` | `amount` [868] | `$effect['amount']`→`resolved_amount` [247] | `feeActions` → `resolved_amount` [974] |
-| `apply_discount` | `value` [891] | `$effect['value']`→`resolved_amount` [251] | عبر الخصومات |
-
-**لا يضيع في الـ pipeline** — لكن مُلاحظتان:
-- ⚠️ **مخالفة مبدأ "لا float":** `calculateExpression()` تُصرّح `: float` وتُعيد `(float) $result` [EnterpriseRuleEngine.php:1166-1191]. هذا يحوّل ناتج BC-decimal إلى float ثم يُعاد تحويله لنص — خطر دقّة في نظام مالي. يجب أن يُعيد سلسلة BC (كما يفعل `FeeEngine::calculate`).
-- المسار الحيّ يمرّ عبر **EnterpriseRuleEngine** لا `RuleEngineV2`. مسار `calculate` في RuleEngineV2 [386-389] (يستخدم `FeeEngine::calculate` بسلسلة BC صحيحة) هو المسار القديم/البسيط وغير مُستدعى في تدفّق الوصل.
-
----
-
-## 4. شكل `calculated_items` و `financial_trace` الحالي
-
-**`workflow_executions.calculated_items`:** cast `array` [WorkflowExecution.php:31]، افتراضي `[]` [WorkflowExecutionService.php:83, 671]. **ليس فارغاً بطبيعته** — يُملأ ويُضاف تراكمياً عبر `array_merge` [338].
-
-شكل البند الواحد [calculateItems:1009-1021]:
-```json
-{
-  "field_id": "...", "field_name": "...", "label": "...",
-  "amount": "15.500", "text_value": null,
-  "fee_code": "GOV-001", "fee_version_id": "...",
-  "action": "set_fee", "is_insured": false,
-  "insurance_value": null, "field_type": "number"
-}
+```
+FeeEngine::resolveActive(fee_code)
+    ↓
+1. Find active OfficialFee (is_active=true, fee_code matches)
+2. Find active FeeVersion (effective_from <= now <= effective_to)
+3. If no FeeVersion → synthetic FeeVersion from OfficialFee.amount
+4. Return FeeVersion with amount
 ```
 
-**الأثر المالي** `buildFinancialTrace()` [1029-1067] (لكل حقل مالي):
-```json
-{ "field_id":"...", "fee_code":"GOV-001", "raw_value":"...",
-  "is_numeric":true, "calculated_amount":"15.500", "included_in_total":true }
+### 1.3 Issues
+
+#### FE-001: Fee version temporal overlap check is not atomic [HIGH]
+- **Severity:** High
+- **Root Cause:** `FeeVersion::saving` hook checks for overlapping date ranges at model level, not database level
+- **Reproduction:** Two concurrent requests create overlapping FeeVersions → both pass the check
+- **Affected Files:** `backend/app/Models/FeeVersion.php`
+- **Impact:** Two active fee versions for the same fee code → unpredictable resolution
+- **Solution:** Add PostgreSQL exclusion constraint or use advisory locks
+
+#### FE-002: Synthetic FeeVersion uses OfficialFee.id as FeeVersion.id [HIGH]
+- **Severity:** High
+- **Root Cause:** `FeeEngine::resolveActive()` creates a synthetic FeeVersion with `$feeVersion->id = $officialFee->id`
+- **Affected Files:** `backend/app/Services/FeeEngine.php:107-116`
+- **Impact:** Synthetic FeeVersion has same ID as OfficialFee, which could cause confusion in fee snapshots and audit trails
+- **Solution:** Use a distinct ID or mark synthetic versions clearly
+
+---
+
+## 2. FEE VERSIONS ANALYSIS
+
+### 2.1 Version Resolution
+
+| Scenario | Resolution | Verified |
+|----------|-----------|----------|
+| Single active version | Returns that version | ✅ |
+| Multiple versions (temporal) | Returns latest version active at date | ✅ |
+| No versions, active OfficialFee | Returns synthetic FeeVersion | ⚠️ |
+| No versions, inactive OfficialFee | Returns null | ✅ |
+| Inactive OfficialFee with versions | Returns null | ✅ |
+
+### 2.2 Issues
+
+#### FE-003: Fee resolution does not cache results [MEDIUM]
+- **Severity:** Medium
+- **Root Cause:** `FeeEngine::resolveActive()` queries the database every time
+- **Impact:** N+1 queries when processing many fee codes in a single execution
+- **Solution:** Add request-level caching
+
+---
+
+## 3. SET_FEE ANALYSIS
+
+### 3.1 set_fee Resolution Path
+
 ```
-يُعاد كـ `financial_calculation_trace` [370] لكن **الـ controller لا يُسطّحه** → غير مرئي للـ frontend.
+EnterpriseRuleEngine::executeActions (case 'set_fee')
+    ↓
+1. Determine fee_code (prefer fee_code, fallback to value)
+2. Check if value is numeric amount → direct assignment
+3. If not numeric → FeeEngine::resolveActive(fee_code)
+4. If resolution fails → throw FinancialIntegrityException
+5. Set finalValues[field_id] = amount
+6. Record field_effects and financial_trace
+```
 
-**متى يصبح `[]`/صفر؟** (1) لا حقل `is_financial`/`fee_code`/`formula` أصلاً؛ أو (2) رسوم مدفوعة عبر rule action مع عدم تطابق `field_id` (§1-ج).
+### 3.2 Issues
+
+#### FE-004: set_fee fee_code detection is ambiguous [HIGH]
+- **Severity:** High
+- **Root Cause:** `EnterpriseRuleEngine` checks `!empty($action['fee_code']) ? $action['fee_code'] : ($value ?? '')`
+- **Affected Files:** `backend/app/Services/EnterpriseRuleEngine.php:901`
+- **Impact:** If fee_code is not set and value is a fee code string (not numeric), it works. But if value is a numeric amount AND fee_code is not set, it treats the amount as a fee code
+- **Evidence:** The `isNumericAmount` check at line 904 handles this, but only when `fee_code` is empty
+- **Solution:** Require explicit fee_code in all set_fee actions
 
 ---
 
-## التوصية — خطوة الإصلاح الأولى (قبل أي تعديل)
+## 4. CALCULATE ANALYSIS
 
-**لا تُصلِح بالتخمين.** المشتبَه الأول (تطابق `field_id`) يحتاج **إثباتاً تجريبياً**:
+### 4.1 Formula Evaluation Pipeline
 
-1. اكتب اختبار تكامل فاشل يقود قاعدة `set_fee` فعلية (rule.field_id = `workflow_field.id`) عبر `PUT /step` ويؤكّد `total_amount > 0`. إن فشل (صفر) → تأكّد جذر السبب.
-2. القرار المعماري الناتج: إمّا توحيد المفتاح في `calculateItems` (تطبيع `field_id` للـ effect إلى `register_field_id`)، أو تطبيع عند بناء الـ rule.
-3. بالتوازي: قرار حول `FinancialCalculationPipeline` — **يُوصَل ويحلّ محلّ `calculateItems`** أم **يُحذف ككود ميّت**؟ (لا يصحّ بقاؤه معزولاً ينجح اختبارات لا تعكس الإنتاج.)
-4. إصلاح float في `calculateExpression()` → إرجاع سلسلة BC.
+```
+FeeEngine::calculate(formula, values, feeAmounts)
+    ↓
+prepareExpression() — replace {{field_id}} and fee_{{code}} placeholders
+    ↓
+tokenize() — convert to token stream
+    ↓
+toRPN() — Shunting-Yard algorithm
+    ↓
+evaluateRPN() — BC Math evaluation
+    ↓
+round() + validateBounds()
+```
 
-### عيب كامن في الـ pipeline الميّت (لو وُصِل لاحقاً)
-[FinancialCalculationPipeline.php:93] `isset($feeAmounts[$field->id])` — `isset()` تُرجِع `false` للقيمة `null`، فإن أعاد `resolve()` قيمة `null` (رسم منتهٍ) يُتجاهَل الحقل بصمت → صفر صامت. استخدم `array_key_exists`.
+### 4.2 Issues
+
+#### FE-005: FormulaEvaluator uses float arithmetic [CRITICAL]
+- **Severity:** Critical
+- **Root Cause:** `FormulaEvaluator::evaluate()` converts result to `(float)` and uses `number_format()`
+- **Affected Files:** `backend/app/Services/FormulaEvaluator.php`
+- **Impact:** Floating-point imprecision in formula evaluation contradicts BC-math-everywhere philosophy
+- **Solution:** Remove FormulaEvaluator or rewrite to use BC Math
+
+#### FE-006: Tokenizer skips unknown characters silently [MEDIUM]
+- **Severity:** Medium
+- **Root Cause:** `FeeEngine::tokenize()` skips unknown characters without error
+- **Affected Files:** `backend/app/Services/FeeEngine.php:297-298`
+- **Impact:** Invalid characters in formulas are silently ignored, producing wrong results
+- **Solution:** Throw exception on unknown characters
 
 ---
 
-## أسئلة تحتاج قراراً قبل الكود
+## 5. APPLY_DISCOUNT ANALYSIS
 
-1. **اتفاقية مفتاح الحقل في الـ rules:** هل `rule.action.field_id` يجب أن يكون `register_field_id` أم `workflow_field.id`؟ (يحدّد مكان التطبيع.)
-2. **مصير `FinancialCalculationPipeline`:** وصل (واستبدال `calculateItems`) أم حذف؟
-3. **هل نُسطّح `financial_calculation_trace` و `grand_total` في response الخطوة** لتمكين تشخيص الـ frontend؟
+### 5.1 Discount Calculation
+
+| Engine | Formula | Scale | Correct? |
+|--------|---------|-------|----------|
+| RuleEngineV2 | `baseValue - (baseValue * discountValue / 100)` | CalculationContext | ✅ |
+| EnterpriseRuleEngine | `baseValue - (baseValue * discountValue / 100)` | Hardcoded 3 | ❌ |
+| ConditionalBranchingEngine | `baseValue - (baseValue * discountValue / 100)` | Hardcoded 3 | ❌ |
+
+### 5.2 Issues
+
+#### FE-007: Discount calculation uses hardcoded scale in two engines [HIGH]
+- **Severity:** High
+- **Root Cause:** EnterpriseRuleEngine and ConditionalBranchingEngine hardcode `$scale = 3`
+- **Affected Files:** `backend/app/Services/EnterpriseRuleEngine.php:980`, `backend/app/Services/ConditionalBranchingEngine.php`
+- **Impact:** If CalculationContext scale changes, discount calculations remain at 3 decimal places
+- **Solution:** Inject CalculationContext and use `$ctx->scale()`
+
+#### FE-008: Discount can produce negative values [LOW]
+- **Severity:** Low
+- **Root Cause:** EnterpriseRuleEngine clamps negative results to `'0.000'` but ConditionalBranchingEngine does not
+- **Affected Files:** `backend/app/Services/ConditionalBranchingEngine.php`
+- **Impact:** Discount larger than base value produces negative amount
+- **Solution:** Add clamping in all discount calculations
+
+---
+
+## 6. TOTALS ANALYSIS
+
+### 6.1 Total Calculation Flow
+
+```
+WorkflowExecutionService::calculateItems()
+    ↓
+1. Build aliasToCanonical map for all fields
+2. Group actions by field
+3. For each field:
+   a. Process calculate actions
+   b. Process set_value actions (if financial)
+   c. Process set_fee actions
+   d. Process fee_code from field definition
+   e. Process calculation_formula from field definition
+4. Process cross-step financial actions
+5. Deduplicate by field_id + fee_code
+6. Return unique items
+    ↓
+WorkflowExecutionService::sumItems()
+    ↓
+bcadd for each item amount
+```
+
+### 6.2 Issues
+
+#### FE-009: Deduplication key allows duplicate amounts [HIGH]
+- **Severity:** High
+- **Root Cause:** Non-fee items are deduplicated by `field_id + amount` key
+- **Affected Files:** `backend/app/Services/WorkflowExecutionService.php:1367-1368`
+- **Impact:** Two different calculate actions producing the same amount for the same field are treated as duplicates, losing one
+- **Solution:** Deduplicate non-fee items by field_id only (last write wins)
+
+#### FE-010: sumItems does not validate item amounts [MEDIUM]
+- **Severity:** Medium
+- **Root Cause:** `sumItems()` casts amount to string and adds, but does not validate that amount is a valid BC Math number
+- **Affected Files:** `backend/app/Services/WorkflowExecutionService.php:1432-1439`
+- **Impact:** Invalid amounts could cause bcadd to fail or produce wrong results
+- **Solution:** Validate amounts before adding
+
+---
+
+## 7. RECEIPT GENERATION ANALYSIS
+
+### 7.1 Receipt Creation Flow
+
+```
+WorkflowExecutionService::complete()
+    ↓
+1. Replay execution state and verify total
+2. Create Receipt (status=draft)
+3. Create ReceiptItem for each calculated_item
+4. Append receipt_created event
+5. Create ReceiptCalculationSnapshot
+6. Append receipt_issued event
+7. Update receipt status to issued
+8. Create record in register
+```
+
+### 7.2 Issues
+
+#### FE-011: Receipt QR code is not scannable [HIGH]
+- **Severity:** High
+- **Root Cause:** `ReceiptService::generateQrSvg()` generates a decorative SVG based on MD5 hash bit patterns, not a real QR code
+- **Affected Files:** `backend/app/Services/ReceiptService.php`
+- **Impact:** QR code cannot be scanned by standard QR readers, misleading users
+- **Solution:** Use a real QR code library (e.g., endroid/qr-code)
+
+#### FE-012: Receipt items use field_id FK that may be soft-deleted [MEDIUM]
+- **Severity:** Medium
+- **Root Cause:** `ReceiptItem::field_id` is a FK to `register_fields`, but register fields can be soft-deleted
+- **Affected Files:** `backend/app/Models/ReceiptItem.php`
+- **Impact:** If a register field is soft-deleted, receipt items reference a soft-deleted record
+- **Solution:** Store field name/label as snapshot (already done) and consider removing FK
+
+---
+
+## 8. SINGLE SOURCE OF TRUTH VERIFICATION
+
+### 8.1 Fee Resolution Single Source
+
+| Component | Resolution Method | Single Source? |
+|-----------|------------------|----------------|
+| RuleEngineV2::resolveAction | FeeEngine::resolveActive | ✅ |
+| EnterpriseRuleEngine::executeActions | FeeEngine::resolveActive | ✅ |
+| ConditionalBranchingEngine::resolveAction | FeeEngine::resolveActive | ✅ |
+| WorkflowExecutionService::calculateItems | FeeEngine::resolveActive | ✅ |
+| FeeEngine::resolveActive | Authoritative | ✅ |
+
+**Finding:** All fee resolution paths use `FeeEngine::resolveActive()`. ✅ Single source confirmed.
+
+### 8.2 Formula Evaluation Sources
+
+| Component | Evaluation Method | Single Source? |
+|-----------|------------------|----------------|
+| FeeEngine::calculate | Shunting-Yard + BC Math | ✅ |
+| FormulaEvaluator::evaluate | Symfony ExpressionLanguage + Float | ❌ |
+| ComputedFieldEngine::computeValue | FeeEngine::calculate | ✅ |
+| EnterpriseRuleEngine::calculateExpression | FeeEngine::calculate | ✅ |
+
+**Finding:** FormulaEvaluator is a competing source of truth for formula evaluation. ❌
+
+### 8.3 Discount Calculation Sources
+
+| Component | Calculation Method | Single Source? |
+|-----------|-------------------|----------------|
+| RuleEngineV2::calculateDiscount | BC Math + CalculationContext | ✅ |
+| EnterpriseRuleEngine::executeActions | BC Math + hardcoded scale | ❌ |
+| ConditionalBranchingEngine::resolveAction | BC Math + hardcoded scale | ❌ |
+
+**Finding:** Three different discount calculation implementations. ❌
+
+---
+
+## 9. FINANCIAL AMOUNT CORRECTNESS
+
+### 9.1 Can the system generate a wrong financial amount?
+
+**YES.** The following scenarios produce wrong amounts:
+
+#### Scenario 1: FormulaEvaluator float imprecision [CRITICAL]
+- **Where:** `FormulaEvaluator::evaluate()`
+- **Why:** Uses `(float)` conversion and `number_format()`
+- **How:** Any formula evaluated through FormulaEvaluator will have float imprecision
+- **Example:** `1000.10 + 0.20` could produce `1000.2999999999999` instead of `1000.300`
+
+#### Scenario 2: Duplicate fee counting on step re-submission [HIGH]
+- **Where:** `WorkflowExecutionService::submitStep()`
+- **Why:** If deduplication key collision occurs (FE-009), one item is lost
+- **How:** Two calculate actions for the same field producing the same amount → one is dropped
+- **Example:** Field A has calculate action producing 1000, field B also produces 1000 for same field → total is 1000 instead of 2000
+
+#### Scenario 3: Fee version race condition [HIGH]
+- **Where:** `FeeVersion::saving` hook
+- **Why:** Non-atomic overlap check
+- **How:** Two concurrent fee version creations with overlapping dates → unpredictable resolution
+- **Example:** Fee version 1: 1000 (Jan-Mar), Fee version 2: 2000 (Feb-Apr) → which is active in Feb?
+
+#### Scenario 4: Builder displays wrong fee amount [HIGH]
+- **Where:** CaseRuleBuilder, EnterpriseRuleBuilder (standard mode)
+- **Why:** Displays `fee.amount` instead of resolved amount
+- **How:** Fee has versions with different amounts → builder shows wrong amount
+- **Example:** Fee code "REGISTRATION" has version 1: 500, version 2: 750 → builder shows 500, runtime charges 750
+
+---
+
+## 10. AUDIT TRAIL ANALYSIS
+
+### 10.1 Financial Audit Trail Components
+
+| Component | Captured | Persistent? | Hash-protected? |
+|-----------|----------|-------------|-----------------|
+| workflow_execution_events | calculated_items, fee_snapshot | ✅ | ✅ (hash chain) |
+| receipt_events | after_state with items | ✅ | ✅ (hash chain) |
+| receipt_calculation_snapshots | workflow_definition, fees_used, field_values | ✅ | ✅ (calculation_hash) |
+| financial_trace | Step-by-step transformations | ✅ (in execution events) | ✅ |
+| FeeEngine fee snapshots | Fee code, amount, version, effective_from | ✅ (in context) | ✅ |
+
+### 10.2 Issues
+
+#### FE-013: FieldAuditTrail is not persisted [HIGH]
+- **Severity:** High
+- **Root Cause:** In-memory only, no persistence
+- **Affected Files:** `backend/app/Services/FieldAuditTrail.php`
+- **Impact:** Field value changes during execution are lost
+- **Solution:** Persist to database
+
+#### FE-014: ReceiptCalculationSnapshot does not capture financial_trace [MEDIUM]
+- **Severity:** Medium
+- **Root Cause:** Snapshot captures `rules_applied` and `fees_used` but not `financial_trace`
+- **Affected Files:** `backend/app/Services/WorkflowExecutionService.php:1490-1512`
+- **Impact:** Cannot reconstruct step-by-step calculation from snapshot alone
+- **Solution:** Include financial_trace in snapshot
+
+---
+
+## FINDINGS SUMMARY
+
+| Severity | Count |
+|----------|-------|
+| Critical | 1 |
+| High | 9 |
+| Medium | 5 |
+| Low | 1 |
+
+---
+
+## RECOMMENDED FIXES PRIORITY
+
+1. **FE-005:** Remove or rewrite FormulaEvaluator to use BC Math
+2. **FE-001:** Add atomic fee version overlap prevention
+3. **FE-004:** Require explicit fee_code in set_fee actions
+4. **FE-007:** Use CalculationContext scale for all discount calculations
+5. **FE-009:** Fix deduplication key for non-fee items
+6. **FE-011:** Replace decorative QR with real QR code
+7. **FE-002:** Fix synthetic FeeVersion ID collision
+8. **FE-013:** Persist FieldAuditTrail
+9. **FE-003:** Add fee resolution caching
+10. **FE-006:** Throw exception on unknown formula characters

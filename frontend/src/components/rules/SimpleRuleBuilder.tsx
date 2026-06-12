@@ -2,6 +2,7 @@ import { useState } from "react";
 import type { WorkflowRule, RuleAction, WorkflowField, ConditionLogic } from "@/types/workflow";
 import { workflowVersionApi } from "@/api/workflows";
 import { useOfficialFees } from "@/hooks/useFees";
+import { formatNumber } from "@/utils/formatNumber";
 import { fieldKey, findFieldByKey, fieldDisplayLabel, isChoiceField, getFieldOptions } from "./fieldKey";
 
 interface SimpleRuleBuilderProps {
@@ -70,6 +71,7 @@ export default function SimpleRuleBuilder({
 }: SimpleRuleBuilderProps) {
   const [name, setName] = useState(rule?.name ?? "");
   const [description, setDescription] = useState(rule?.description ?? "");
+  const [realtimeEnabled, setRealtimeEnabled] = useState(rule?.realtime_enabled ?? true);
 
   // Normalize the stored condition_logic (flat single OR grouped) into a flat list.
   const initial = normalizeConditions(rule?.condition_logic ?? null);
@@ -124,6 +126,7 @@ export default function SimpleRuleBuilder({
         actions,
         sort_order: rule?.sort_order ?? 0,
         is_active: true,
+        realtime_enabled: realtimeEnabled,
       };
 
       if (rule?.id) {
@@ -157,6 +160,20 @@ export default function SimpleRuleBuilder({
         <div style={{ display: "flex", gap: "10px", flexWrap: "wrap" }}>
           <input value={name} onChange={(e) => setName(e.target.value)} placeholder="اسم القاعدة" style={{ ...inputStyle, flex: 2, minWidth: "180px" }} />
           <input value={description} onChange={(e) => setDescription(e.target.value)} placeholder="الوصف (اختياري)" style={{ ...inputStyle, flex: 3, minWidth: "180px" }} />
+        </div>
+
+        {/* Real-time execution checkbox */}
+        <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+          <input
+            type="checkbox"
+            id="realtime-enabled"
+            checked={realtimeEnabled}
+            onChange={(e) => setRealtimeEnabled(e.target.checked)}
+            style={{ width: "18px", height: "18px" }}
+          />
+          <label htmlFor="realtime-enabled" style={{ fontSize: "13px", fontWeight: 500, color: "var(--color-text-primary)", cursor: "pointer" }}>
+            ☑ تنفيذ فوري (Real-time execution)
+          </label>
         </div>
 
         {/* Conditions */}
@@ -229,7 +246,7 @@ export default function SimpleRuleBuilder({
                   <option value="">اختر الرسم من المكتبة...</option>
                   {officialFees?.map((fee) => {
                     const displayAmount = fee.resolved_amount ?? fee.amount;
-                    return <option key={fee.fee_code} value={fee.fee_code}>{fee.name_ar} ({fee.fee_code}){displayAmount != null ? ` — ${Number(displayAmount).toLocaleString("en")} د.ع` : ""}</option>;
+                    return <option key={fee.fee_code} value={fee.fee_code}>{fee.name_ar} ({fee.fee_code}){displayAmount != null ? ` — ${formatNumber(displayAmount)} د.ع` : ""}</option>;
                   })}
                 </select>
               ) : a.action === "calculate" ? (

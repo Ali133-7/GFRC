@@ -23,7 +23,6 @@ class UpdateUserPermissionsRequest extends FormRequest
     public function withValidator($validator): void
     {
         $validator->after(function ($validator) {
-            $targetUser = \App\Models\User::findOrFail($this->route('id'));
             $permissions = $this->input('permissions', []);
 
             $existingPerms = DB::table('permissions')
@@ -32,25 +31,12 @@ class UpdateUserPermissionsRequest extends FormRequest
                 ->pluck('name')
                 ->toArray();
 
-            if (in_array('system.reset', $permissions) && !in_array('system.reset', $existingPerms)) {
+            // Check if any permissions don't exist
+            $invalidPerms = array_diff($permissions, $existingPerms);
+            if (!empty($invalidPerms)) {
                 $validator->errors()->add(
                     'permissions',
-                    'صلاحية system.reset غير موجودة في النظام'
-                );
-            }
-
-            if (in_array('system.reset', $existingPerms) && !$targetUser->hasRole('super_admin')) {
-                $validator->errors()->add(
-                    'permissions',
-                    'لا يمكن منح صلاحية حذف كافة البيانات إلا لمستخدمي super_admin'
-                );
-            }
-
-            $currentUser = $this->user();
-            if (in_array('system.reset', $existingPerms) && !$currentUser->hasRole('super_admin')) {
-                $validator->errors()->add(
-                    'permissions',
-                    'يجب أن تكون super_admin لمنح صلاحية حذف كافة البيانات'
+                    'Invalid permissions: ' . implode(', ', $invalidPerms)
                 );
             }
         });

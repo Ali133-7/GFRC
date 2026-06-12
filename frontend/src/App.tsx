@@ -6,6 +6,8 @@ import { LoadingSpinner } from '@/components/ui/LoadingSpinner';
 import LoginPage from '@/pages/LoginPage';
 import VerifyReceiptPage from '@/pages/VerifyReceiptPage';
 import DashboardPage from '@/pages/DashboardPage';
+import DashboardBuilderPage from '@/pages/DashboardBuilderPage';
+import AdminDashboardManagement from '@/pages/AdminDashboardManagement';
 import ReceiptListPage from '@/pages/receipts/ReceiptListPage';
 import ReceiptCreatePage from '@/pages/receipts/ReceiptCreatePage';
 import ReceiptDetailPage from '@/pages/receipts/ReceiptDetailPage';
@@ -70,6 +72,9 @@ export default function App() {
           <Route path="/" element={<AuthGuard><AppLayout /></AuthGuard>}>
             <Route index element={<Navigate to="/dashboard" replace />} />
             <Route path="dashboard" element={<DashboardPage />} />
+            <Route path="dashboard/builder" element={<DashboardBuilderPage />} />
+            <Route path="dashboard/builder/:id" element={<DashboardBuilderPage />} />
+            <Route path="admin/dashboards" element={<AdminDashboardManagement />} />
             <Route path="receipts" element={<ReceiptListPage />} />
             <Route path="receipts/create" element={<ReceiptCreatePage />} />
             <Route path="receipts/:id" element={<ReceiptDetailPage />} />

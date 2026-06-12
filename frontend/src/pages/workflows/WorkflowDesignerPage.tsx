@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useMemo } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { toBoolean } from "@/lib/boolean";
 import { useNavigate, useParams } from "react-router-dom";
 import {
@@ -63,14 +64,31 @@ type Tab = "versions" | "steps" | "fields" | "rules" | "preview";
 export default function WorkflowDesignerPage() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const [activeTab, setActiveTab] = useState<Tab>("versions");
   const [selectedVersionId, setSelectedVersionId] = useState<string | null>(null);
 
   const { data: workflow, isLoading } = useWorkflow(id ?? "");
-  const { data: versions } = useWorkflowVersions(id ?? "");
-  const { data: versionDetail } = useWorkflowVersion(id ?? "", selectedVersionId ?? "");
+  const { data: versions, isLoading: versionsLoading } = useWorkflowVersions(id ?? "");
+  const { data: versionDetail, error: versionDetailError } = useWorkflowVersion(id ?? "", selectedVersionId ?? "");
   const { data: registerFields } = useRegisterFields(workflow?.register_id ?? "");
   const { data: allRegisters } = useRegisters();
+
+  // CRITICAL: Clear ALL cache and reset on workflow change
+  useEffect(() => {
+    setSelectedVersionId(null);
+    // Clear EVERYTHING related to workflows
+    queryClient.clear();
+  }, [id]);
+
+  // CRITICAL: If version detail fetch fails (404), reset to versions list
+  useEffect(() => {
+    if (versionDetailError) {
+      console.warn('[WorkflowDesigner] Version detail fetch failed, resetting selection');
+      setSelectedVersionId(null);
+      queryClient.removeQueries({ queryKey: ["workflows", id, "versions", selectedVersionId] });
+    }
+  }, [versionDetailError, id, selectedVersionId, queryClient]);
 
   // Auto-select active or first version when versions load
   useEffect(() => {
@@ -176,7 +194,11 @@ export default function WorkflowDesignerPage() {
           </button>
         ))}
         <button
-          onClick={() => createVersionMut.mutate({ workflowId: workflow.id })}
+          onClick={() => {
+            if (confirm('هل أنت متأكد من إنشاء نسخة جديدة؟ سيتم إنشاء نسخة مسودة من النسخة الحالية.')) {
+              createVersionMut.mutate({ workflowId: workflow.id });
+            }
+          }}
           disabled={createVersionMut.isPending}
           style={{
             padding: "6px 12px",

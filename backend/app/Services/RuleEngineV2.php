@@ -2,6 +2,17 @@
 
 namespace App\Services;
 
+/**
+ * @deprecated RuleEngineV2 is deprecated.
+ * 
+ * Use EnterpriseRuleEngine instead which handles ALL rule types:
+ * - Enterprise rules (validation_rules with rule_config)
+ * - Simple rules (workflow_rules)
+ * - Case-based rules (workflow_rules)
+ * 
+ * This class is kept for backward compatibility only.
+ * All new development should use EnterpriseRuleEngine.
+ */
 class RuleEngineV2
 {
     protected FeeEngine $feeEngine;

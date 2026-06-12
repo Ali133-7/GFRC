@@ -99,7 +99,10 @@ export default function WorkflowFormPage() {
     } else {
       createMut.mutate(form, {
         onSuccess: (data) => {
-          if (data?.id) navigate(`/workflows/${data.id}`);
+          // Full page reload to clear all cache
+          if (data?.id) {
+            window.location.href = `/workflows/${data.id}`;
+          }
         },
         onError: (err) => {
           setErrors(extractErrors(err));

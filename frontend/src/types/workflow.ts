@@ -126,6 +126,7 @@ export interface WorkflowRule {
   match_mode?: 'exact' | 'contains' | 'pattern' | 'in';
   sort_order: number;
   is_active: boolean;
+  realtime_enabled?: boolean;
   created_at: string;
 }
 
@@ -149,6 +150,28 @@ export interface RuleAction {
   fee_name?: string;
   field_type?: string;
   options?: Array<{ label: string; value: string }>;
+}
+
+export interface ValidationRule {
+  id: string;
+  workflow_version_id: string;
+  name: string | null;
+  description: string | null;
+  validation_type: string;
+  category?: string;
+  target_register_id?: string;
+  trigger_field_id?: string;
+  trigger_conditions?: any[];
+  target_fields?: any[];
+  rule_config?: any;
+  response_type?: 'error' | 'warning' | 'confirm';
+  error_message_ar?: string;
+  confirm_message_ar?: string;
+  sort_order: number;
+  is_active: boolean;
+  realtime_enabled?: boolean;
+  priority?: number;
+  created_at: string;
 }
 
 export interface WorkflowExecution {

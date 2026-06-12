@@ -2,863 +2,455 @@
 
 namespace App\Http\Controllers\Api\V1;
 
-use App\Models\Workflow;
-use App\Models\WorkflowField;
-use App\Models\WorkflowRule;
-use App\Models\WorkflowStep;
 use App\Models\WorkflowVersion;
-use Illuminate\Http\JsonResponse;
+use App\Models\WorkflowRule;
+use App\Models\ValidationRule;
 use Illuminate\Http\Request;
-use Illuminate\Support\Facades\DB;
+use Illuminate\Http\JsonResponse;
+use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Log;
 
 class WorkflowVersionController extends ApiController
 {
+    /**
+     * List workflow versions for a specific workflow
+     */
     public function index(string $workflowId): JsonResponse
     {
-        $workflow = Workflow::findOrFail($workflowId);
-        $this->authorize('view', $workflow);
+        try {
+            $workflow = \App\Models\Workflow::find($workflowId);
 
-        $versions = $workflow->versions()->with(['steps', 'publisher'])->get();
-        return $this->success($versions);
-    }
+            if (!$workflow) {
+                return $this->error('Workflow not found', 404);
+            }
 
-    public function store(Request $request, string $workflowId): JsonResponse
-    {
-        $workflow = Workflow::findOrFail($workflowId);
-        $this->authorize('update', $workflow);
+            $versions = WorkflowVersion::where('workflow_id', $workflowId)
+                ->with(['workflow'])
+                ->orderBy('version', 'desc')
+                ->get();
 
-        $data = $request->validate([
-            'change_summary' => 'nullable|string',
-        ]);
-
-        // Clone from active version, or latest version if no active exists
-        $sourceVersion = $workflow->versions()->where('status', 'active')->first()
-            ?? $workflow->versions()->orderByDesc('version')->first();
-
-        $latestVersion = $workflow->versions()->max('version') ?? 0;
-        $newVersionNumber = $latestVersion + 1;
-
-        $version = WorkflowVersion::create([
-            'workflow_id' => $workflow->id,
-            'version' => $newVersionNumber,
-            'status' => 'draft',
-            'change_summary' => $data['change_summary'] ?? 'نسخة جديدة',
-        ]);
-
-        // Clone all data from source version if one exists
-        if ($sourceVersion) {
-            DB::transaction(function () use ($sourceVersion, $version) {
-                $this->replicateVersionContents($sourceVersion, $version);
-            });
+            return $this->success($versions, 'Versions retrieved successfully');
+        } catch (\Exception $e) {
+            Log::error('[WorkflowVersionController] index error', [
+                'error' => $e->getMessage(),
+                'workflow_id' => $workflowId,
+            ]);
+            return $this->error('Server error: ' . $e->getMessage(), 500);
         }
-
-        return $this->success(
-            $version->load(['steps', 'fields.registerField', 'rules', 'validationRules']),
-            'تم إنشاء نسخة جديدة',
-            [],
-            201
-        );
     }
 
+    /**
+     * Get a specific workflow version by ID
+     */
     public function show(string $workflowId, string $versionId): JsonResponse
     {
-        $workflow = Workflow::findOrFail($workflowId);
-        $this->authorize('view', $workflow);
+        try {
+            $user = Auth::user();
+            
+            if (!$user) {
+                return $this->error('Unauthorized', 401);
+            }
 
-        $version = $workflow->versions()
-            ->where('id', $versionId)
-            ->with(['steps.fields.registerField', 'fields.registerField', 'rules', 'validationRules.targetRegister', 'publisher'])
-            ->firstOrFail();
+            // First get version without workflow filter to check if it exists
+            $version = WorkflowVersion::where('id', $versionId)->first();
 
-        return $this->success($version);
-    }
+            if (!$version) {
+                Log::warning('[WorkflowVersionController] Version not found', [
+                    'version_id' => $versionId,
+                    'workflow_id' => $workflowId,
+                ]);
+                return $this->error('Workflow version not found', 404);
+            }
 
-    public function update(Request $request, string $workflowId, string $versionId): JsonResponse
-    {
-        $workflow = Workflow::findOrFail($workflowId);
-        $version = $workflow->versions()->where('id', $versionId)->firstOrFail();
+            // Check if version belongs to the requested workflow
+            if ($version->workflow_id !== $workflowId) {
+                Log::error('[WorkflowVersionController] Version mismatch', [
+                    'version_id' => $versionId,
+                    'version_workflow_id' => $version->workflow_id,
+                    'requested_workflow_id' => $workflowId,
+                ]);
+                return $this->error('Workflow version does not belong to this workflow', 404);
+            }
 
-        $this->authorize('update', $workflow);
+            $version = WorkflowVersion::where('id', $versionId)
+                ->where('workflow_id', $workflowId)
+                ->with(['workflow', 'steps', 'fields', 'rules', 'validationRules'])
+                ->first();
 
-        if (!$version->isDraft()) {
-            return $this->error('لا يمكن تعديل نسخة منشورة أو مؤرشفة', 422);
+            return $this->success([
+                'version' => $version,
+            ], 'Workflow version retrieved successfully');
+        } catch (\Exception $e) {
+            Log::error('[WorkflowVersionController] show error', [
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
+            ]);
+            return $this->error('Server error: ' . $e->getMessage(), 500);
         }
-
-        $data = $request->validate([
-            'change_summary' => 'nullable|string',
-        ]);
-
-        $version->update($data);
-
-        return $this->success($version);
     }
 
-    public function publish(string $workflowId, string $versionId): JsonResponse
+    /**
+     * Create a new workflow version
+     */
+    public function store(Request $request, string $workflowId): JsonResponse
     {
-        $workflow = Workflow::findOrFail($workflowId);
-        $version = $workflow->versions()->where('id', $versionId)->firstOrFail();
+        try {
+            $user = Auth::user();
+            
+            if (!$user) {
+                return $this->error('Unauthorized', 401);
+            }
 
-        $this->authorize('update', $workflow);
+            $workflow = \App\Models\Workflow::find($workflowId);
 
-        if (!$version->isDraft()) {
-            return $this->error('النسخة ليست مسودة', 422);
-        }
+            if (!$workflow) {
+                return $this->error('Workflow not found', 404);
+            }
 
-        // Archive any currently active version
-        $workflow->versions()->where('status', 'active')->update([
-            'status' => 'archived',
-            'archived_at' => now(),
-        ]);
+            $validated = $request->validate([
+                'change_summary' => 'nullable|string|max:500',
+            ]);
 
-        $version->publish();
+            $latestVersion = WorkflowVersion::where('workflow_id', $workflowId)
+                ->orderBy('version', 'desc')
+                ->first();
 
-        return $this->success($version->fresh(), 'تم نشر النسخة بنجاح');
-    }
-
-    public function archive(string $workflowId, string $versionId): JsonResponse
-    {
-        $workflow = Workflow::findOrFail($workflowId);
-        $version = $workflow->versions()->where('id', $versionId)->firstOrFail();
-
-        $this->authorize('update', $workflow);
-
-        $version->archive();
-
-        return $this->success($version->fresh(), 'تم أرشفة النسخة بنجاح');
-    }
-
-    public function cloneVersion(Request $request, string $workflowId, string $versionId): JsonResponse
-    {
-        $workflow = Workflow::findOrFail($workflowId);
-        $sourceVersion = $workflow->versions()->where('id', $versionId)->firstOrFail();
-
-        $this->authorize('update', $workflow);
-
-        $newVersion = DB::transaction(function () use ($workflow, $sourceVersion, $request) {
-            $latestVersion = $workflow->versions()->max('version') ?? 0;
+            $newVersionNumber = $latestVersion ? $latestVersion->version + 1 : 1;
 
             $version = WorkflowVersion::create([
-                'workflow_id' => $workflow->id,
-                'version' => $latestVersion + 1,
+                'workflow_id' => $workflowId,
+                'version' => $newVersionNumber,
                 'status' => 'draft',
-                'change_summary' => $request->input('change_summary', 'نسخة مستنسخة من V' . $sourceVersion->version),
+                'change_summary' => $validated['change_summary'] ?? 'إنشاء نسخة جديدة',
             ]);
 
-            $this->replicateVersionContents($sourceVersion, $version);
-
-            return $version;
-        });
-
-        return $this->success($newVersion->load(['steps', 'fields.registerField', 'rules', 'validationRules']), 'تم استنساخ النسخة بنجاح', [], 201);
-    }
-
-    /**
-     * Replicate a source version's steps, fields, rules and validation rules into a target
-     * version, remapping custom-field key references inside the cloned rules.
-     *
-     * Register-backed fields are keyed by the stable register_field_id, so their keys survive
-     * cloning unchanged. Custom fields are keyed by custom_<workflow_field.id>, and that id is
-     * regenerated on clone — so without remapping, cloned rules point at the SOURCE version's
-     * custom fields and silently never match (trigger value reads null → rule skipped).
-     */
-    private function replicateVersionContents(WorkflowVersion $source, WorkflowVersion $target): void
-    {
-        // Steps
-        $stepMap = [];
-        foreach ($source->steps as $step) {
-            $newStep = WorkflowStep::create([
-                'workflow_version_id' => $target->id,
-                'title_ar' => $step->title_ar,
-                'title_en' => $step->title_en,
-                'description' => $step->description,
-                'sort_order' => $step->sort_order,
-                'condition_logic' => $step->condition_logic,
-                'is_visible' => $step->is_visible,
-            ]);
-            $stepMap[$step->id] = $newStep->id;
-        }
-
-        // Fields — capture old→new custom-field key map for rule remapping.
-        $keyMap = [];
-        foreach ($source->fields as $field) {
-            $newField = WorkflowField::create([
-                'workflow_version_id' => $target->id,
-                'register_field_id' => $field->register_field_id,
-                'step_id' => $field->step_id ? ($stepMap[$field->step_id] ?? null) : null,
-                'label_override' => $field->label_override,
-                'custom_name' => $field->custom_name,
-                'custom_label' => $field->custom_label,
-                'placeholder' => $field->placeholder,
-                'default_value' => $field->default_value,
-                'is_required' => $field->is_required,
-                'is_visible' => $field->is_visible,
-                'is_editable' => $field->is_editable,
-                'is_readonly' => $field->is_readonly,
-                'is_locked' => $field->is_locked,
-                'is_financial' => $field->is_financial,
-                'is_insured' => $field->is_insured,
-                'insurance_value' => $field->insurance_value,
-                'priority' => $field->priority,
-                'is_computed' => $field->is_computed,
-                'sort_order' => $field->sort_order,
-                'condition_logic' => $field->condition_logic,
-                'fee_code' => $field->fee_code,
-                'calculation_formula' => $field->calculation_formula,
-                'field_type' => $field->field_type,
-                'options' => $field->options,
-                'validation_rules' => $field->validation_rules,
-                'conditional_validation_rules' => $field->conditional_validation_rules,
-                'cross_field_validation_rules' => $field->cross_field_validation_rules,
-                'computed_formula' => $field->computed_formula,
-                'computed_dependencies' => $field->computed_dependencies,
-                'parent_field_id' => $field->parent_field_id,
-                'option_source_type' => $field->option_source_type,
-                'option_source_config' => $field->option_source_config,
-                'cascade_config' => $field->cascade_config,
+            Log::info('[WorkflowVersionController] Version created', [
+                'version_id' => $version->id,
+                'workflow_id' => $workflowId,
+                'version_number' => $newVersionNumber,
+                'user_id' => $user->id,
             ]);
 
-            if ($field->register_field_id === null) {
-                $keyMap['custom_' . $field->id] = 'custom_' . $newField->id;
-            }
-        }
-
-        // Workflow rules — remap every custom-field key reference in the cloned rule.
-        foreach ($source->rules as $rule) {
-            WorkflowRule::create([
-                'workflow_version_id' => $target->id,
-                'name' => $rule->name,
-                'description' => $rule->description,
-                'rule_type' => $rule->rule_type,
-                'trigger_field_id' => $this->remapFieldKeys($rule->trigger_field_id, $keyMap),
-                'cases' => $this->remapFieldKeys($rule->cases, $keyMap),
-                'default_actions' => $this->remapFieldKeys($rule->default_actions, $keyMap),
-                'match_mode' => $rule->match_mode,
-                'condition_logic' => $this->remapFieldKeys($rule->condition_logic, $keyMap),
-                'actions' => $this->remapFieldKeys($rule->actions, $keyMap),
-                'sort_order' => $rule->sort_order,
-                'is_active' => $rule->is_active,
+            return $this->success([
+                'version' => $version,
+            ], 'Version created successfully', [], 201);
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            return $this->error($e->getMessage(), 422);
+        } catch (\Exception $e) {
+            Log::error('[WorkflowVersionController] store error', [
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
             ]);
-        }
-
-        // Validation rules (including enterprise rule_config) — remap references too.
-        foreach ($source->validationRules as $vRule) {
-            \App\Models\ValidationRule::create([
-                'workflow_version_id' => $target->id,
-                'name' => $vRule->name,
-                'description' => $vRule->description,
-                'validation_type' => $vRule->validation_type,
-                'target_register_id' => $vRule->target_register_id,
-                'trigger_field_id' => $this->remapFieldKeys($vRule->trigger_field_id, $keyMap),
-                'trigger_conditions' => $this->remapFieldKeys($vRule->trigger_conditions, $keyMap),
-                'target_fields' => $this->remapFieldKeys($vRule->target_fields, $keyMap),
-                'query_conditions' => $this->remapFieldKeys($vRule->query_conditions, $keyMap),
-                'sql_query' => $vRule->sql_query,
-                'sql_condition' => $vRule->sql_condition,
-                'route_config' => $this->remapFieldKeys($vRule->route_config, $keyMap),
-                'lookup_config' => $this->remapFieldKeys($vRule->lookup_config, $keyMap),
-                'field_effects' => $this->remapFieldKeys($vRule->field_effects, $keyMap),
-                'response_type' => $vRule->response_type,
-                'error_message_ar' => $vRule->error_message_ar,
-                'error_message_en' => $vRule->error_message_en,
-                'confirm_message_ar' => $vRule->confirm_message_ar,
-                'confirm_message_en' => $vRule->confirm_message_en,
-                'sort_order' => $vRule->sort_order,
-                'is_active' => $vRule->is_active,
-                'rule_config' => $this->remapFieldKeys($vRule->rule_config, $keyMap),
-                'priority' => $vRule->priority,
-                'category' => $vRule->category,
-            ]);
+            return $this->error('Server error: ' . $e->getMessage(), 500);
         }
     }
 
     /**
-     * Recursively replace any string that exactly equals a mapped field key.
-     * Field keys are custom_<uuid>, so exact-match replacement is collision-safe.
+     * Get all rules for a workflow version
      */
-    private function remapFieldKeys(mixed $data, array $keyMap): mixed
+    public function getRules(string $versionId): JsonResponse
     {
-        if (is_string($data)) {
-            return $keyMap[$data] ?? $data;
-        }
-        if (is_array($data)) {
-            return array_map(fn ($v) => $this->remapFieldKeys($v, $keyMap), $data);
-        }
-        return $data;
-    }
-
-    // --- Steps ---
-
-    public function storeStep(Request $request, string $workflowId, string $versionId): JsonResponse
-    {
-        $workflow = Workflow::findOrFail($workflowId);
-        $version = $workflow->versions()->where('id', $versionId)->firstOrFail();
-        $this->authorize('update', $workflow);
-
-        if (!$version->isDraft()) {
-            return $this->error('لا يمكن تعديل نسخة منشورة أو مؤرشفة', 422);
-        }
-
-        $data = $request->validate([
-            'title_ar' => 'required|string|max:200',
-            'title_en' => 'nullable|string|max:200',
-            'description' => 'nullable|string',
-            'sort_order' => 'nullable|integer',
-            'condition_logic' => 'nullable|array',
-            'is_visible' => 'nullable|boolean',
-        ]);
-        $data['workflow_version_id'] = $version->id;
-
-        $step = WorkflowStep::create($data);
-        return $this->success($step, '', [], 201);
-    }
-
-    public function updateStep(Request $request, string $workflowId, string $versionId, string $stepId): JsonResponse
-    {
-        $workflow = Workflow::findOrFail($workflowId);
-        $version = $workflow->versions()->where('id', $versionId)->firstOrFail();
-        $step = $version->steps()->where('id', $stepId)->firstOrFail();
-        $this->authorize('update', $workflow);
-
-        if (!$version->isDraft()) {
-            return $this->error('لا يمكن تعديل نسخة منشورة أو مؤرشفة', 422);
-        }
-
-        $step->update($request->only([
-            'title_ar', 'title_en', 'description', 'sort_order', 'condition_logic', 'is_visible'
-        ]));
-
-        return $this->success($step->fresh());
-    }
-
-    public function destroyStep(string $workflowId, string $versionId, string $stepId): JsonResponse
-    {
-        $workflow = Workflow::findOrFail($workflowId);
-        $version = $workflow->versions()->where('id', $versionId)->firstOrFail();
-        $step = $version->steps()->where('id', $stepId)->firstOrFail();
-        $this->authorize('update', $workflow);
-
-        if (!$version->isDraft()) {
-            return $this->error('لا يمكن تعديل نسخة منشورة أو مؤرشفة', 422);
-        }
-
-        $step->delete();
-        return $this->success([], 'تم حذف الخطوة');
-    }
-
-    public function reorderSteps(Request $request, string $workflowId, string $versionId): JsonResponse
-    {
-        $workflow = Workflow::findOrFail($workflowId);
-        $version = $workflow->versions()->where('id', $versionId)->firstOrFail();
-        $this->authorize('update', $workflow);
-
-        $data = $request->validate(['steps' => 'required|array', 'steps.*.id' => 'required|string', 'steps.*.sort_order' => 'required|integer']);
-
-        foreach ($data['steps'] as $stepData) {
-            $version->steps()->where('id', $stepData['id'])->update(['sort_order' => $stepData['sort_order']]);
-        }
-
-        return $this->success($version->steps()->orderBy('sort_order')->get());
-    }
-
-    // --- Fields ---
-
-    public function storeField(Request $request, string $workflowId, string $versionId): JsonResponse
-    {
-        $workflow = Workflow::findOrFail($workflowId);
-        $version = $workflow->versions()->where('id', $versionId)->firstOrFail();
-        $this->authorize('update', $workflow);
-
-        if (!$version->isDraft()) {
-            return $this->error('لا يمكن تعديل نسخة منشورة أو مؤرشفة', 422);
-        }
-
-        $data = $request->validate([
-            'register_field_id' => 'nullable|string|exists:register_fields,id',
-            'custom_name' => 'nullable|string|max:100',
-            'custom_label' => 'nullable|string|max:200',
-            'step_id' => 'nullable|string|exists:workflow_steps,id',
-            'label_override' => 'nullable|string|max:200',
-            'placeholder' => 'nullable|string|max:200',
-            'default_value' => 'nullable|string',
-            'is_required' => 'nullable|boolean',
-            'is_visible' => 'nullable|boolean',
-            'is_readonly' => 'nullable|boolean',
-            'is_editable' => 'nullable|boolean',
-            'is_locked' => 'nullable|boolean',
-            'is_financial' => 'nullable|boolean',
-            'is_insured' => 'nullable|boolean',
-            'insurance_value' => 'nullable|numeric',
-            'priority' => 'nullable|integer',
-            'sort_order' => 'nullable|integer',
-            'condition_logic' => 'nullable|array',
-            'fee_code' => 'nullable|string|max:50',
-            'calculation_formula' => 'nullable|string',
-            'field_type' => 'nullable|string|max:30',
-            'options' => 'nullable|array',
-            'validation_rules' => 'nullable|array',
-        ]);
-
-        if (empty($data['register_field_id']) && empty($data['custom_name'])) {
-            return $this->error('يجب تحديد register_field_id أو custom_name', 422);
-        }
-
-        // Snapshot register field properties when adding to workflow
-        if (!empty($data['register_field_id']) && empty($data['custom_name'])) {
-            $registerField = \App\Models\RegisterField::find($data['register_field_id']);
-            if ($registerField) {
-                $data['field_type'] = $data['field_type'] ?? $registerField->field_type;
-                $data['options'] = $data['options'] ?? $registerField->options;
-                $data['default_value'] = $data['default_value'] ?? $registerField->default_value;
-                $data['validation_rules'] = $data['validation_rules'] ?? $registerField->validation_rules;
-                $data['is_required'] = $data['is_required'] ?? $registerField->is_required;
-                $data['is_visible'] = $data['is_visible'] ?? $registerField->is_visible;
-                $data['is_editable'] = $data['is_editable'] ?? $registerField->is_editable;
-                $data['is_locked'] = $data['is_locked'] ?? $registerField->is_locked;
-                $data['is_financial'] = $data['is_financial'] ?? $registerField->is_financial;
-                $data['is_insured'] = $data['is_insured'] ?? $registerField->is_insured;
-                $data['insurance_value'] = $data['insurance_value'] ?? $registerField->insurance_value;
-                $data['priority'] = $data['priority'] ?? $registerField->priority;
-                $data['placeholder'] = $data['placeholder'] ?? $registerField->name;
-                $data['sort_order'] = $data['sort_order'] ?? $registerField->sort_order;
+        try {
+            $user = Auth::user();
+            
+            if (!$user) {
+                return $this->error('Unauthorized', 401);
             }
-        }
 
-        if (empty($data['sort_order'])) {
-            $maxSortOrder = $version->fields()->max('sort_order') ?? 0;
-            $data['sort_order'] = $maxSortOrder + 1;
-        }
+            $version = WorkflowVersion::find($versionId);
 
-        $data['workflow_version_id'] = $version->id;
-
-        $field = WorkflowField::create($data);
-        return $this->success($field->load('registerField'), '', [], 201);
-    }
-
-    public function updateField(Request $request, string $workflowId, string $versionId, string $fieldId): JsonResponse
-    {
-        $workflow = Workflow::findOrFail($workflowId);
-        $version = $workflow->versions()->where('id', $versionId)->firstOrFail();
-        $field = $version->fields()->where('id', $fieldId)->firstOrFail();
-        $this->authorize('update', $workflow);
-
-        if (!$version->isDraft()) {
-            return $this->error('لا يمكن تعديل نسخة منشورة أو مؤرشفة', 422);
-        }
-
-        $field->update($request->only([
-            'step_id', 'label_override', 'custom_name', 'custom_label', 'placeholder', 'default_value',
-            'is_required', 'is_visible', 'is_readonly', 'is_editable', 'is_locked',
-            'is_financial', 'is_insured', 'insurance_value', 'priority',
-            'sort_order', 'condition_logic', 'fee_code', 'calculation_formula',
-            'field_type', 'options', 'validation_rules',
-            'conditional_validation_rules', 'cross_field_validation_rules',
-            'computed_formula', 'computed_dependencies', 'is_computed',
-            'parent_field_id', 'option_source_type', 'option_source_config', 'cascade_config',
-        ]));
-
-        return $this->success($field->fresh()->load('registerField'));
-    }
-
-    public function destroyField(string $workflowId, string $versionId, string $fieldId): JsonResponse
-    {
-        $workflow = Workflow::findOrFail($workflowId);
-        $version = $workflow->versions()->where('id', $versionId)->firstOrFail();
-        $field = $version->fields()->where('id', $fieldId)->firstOrFail();
-        $this->authorize('update', $workflow);
-
-        if (!$version->isDraft()) {
-            return $this->error('لا يمكن تعديل نسخة منشورة أو مؤرشفة', 422);
-        }
-
-        $field->delete();
-        return $this->success([], 'تم حذف الحقل');
-    }
-
-    public function reorderFields(Request $request, string $workflowId, string $versionId): JsonResponse
-    {
-        $workflow = Workflow::findOrFail($workflowId);
-        $version = $workflow->versions()->where('id', $versionId)->firstOrFail();
-        $this->authorize('update', $workflow);
-
-        if (!$version->isDraft()) {
-            return $this->error('لا يمكن تعديل نسخة منشورة أو مؤرشفة', 422);
-        }
-
-        $data = $request->validate([
-            'fields' => 'required|array',
-            'fields.*.workflow_field_id' => 'required|string',
-            'fields.*.sort_order' => 'required|integer',
-        ]);
-
-        DB::transaction(function () use ($version, $data) {
-            foreach ($data['fields'] as $fieldData) {
-                $version->fields()
-                    ->where('id', $fieldData['workflow_field_id'])
-                    ->update(['sort_order' => $fieldData['sort_order']]);
+            if (!$version) {
+                return $this->error('Workflow version not found', 404);
             }
-        });
 
-        return $this->success($version->fields()->orderBy('sort_order')->get()->load('registerField'));
-    }
+            $rules = WorkflowRule::where('workflow_version_id', $versionId)
+                ->orderBy('sort_order')
+                ->get();
 
-    // --- Rules ---
-
-    public function storeRule(Request $request, string $workflowId, string $versionId): JsonResponse
-    {
-        $workflow = Workflow::findOrFail($workflowId);
-        $version = $workflow->versions()->where('id', $versionId)->firstOrFail();
-        $this->authorize('update', $workflow);
-
-        if (!$version->isDraft()) {
-            return $this->error('لا يمكن تعديل نسخة منشورة أو مؤرشفة', 422);
-        }
-
-        $ruleType = $request->input('rule_type', 'simple');
-
-        if ($ruleType === 'case_based') {
-            $data = $request->validate([
-                'name' => 'nullable|string|max:200',
-                'description' => 'nullable|string',
-                'rule_type' => 'required|in:case_based',
-                'trigger_field_id' => 'required|string',
-                'cases' => 'required|array|min:1',
-                'cases.*.value' => 'required',
-                'cases.*.label' => 'nullable|string',
-                'cases.*.actions' => 'required|array|min:1',
-                'cases.*.priority' => 'nullable|integer',
-                'cases.*.compound_condition' => 'nullable|array',
-                'default_actions' => 'nullable|array',
-                'match_mode' => 'nullable|in:exact,contains,pattern,in',
-                'sort_order' => 'nullable|integer',
-                'is_active' => 'nullable|boolean',
+            return $this->success([
+                'rules' => $rules,
+            ], 'Rules retrieved successfully');
+        } catch (\Exception $e) {
+            Log::error('[WorkflowVersionController] getRules error', [
+                'error' => $e->getMessage(),
             ]);
-
-            // Case-based rules don't use condition_logic, but the column is NOT NULL
-            $data['condition_logic'] = ['operator' => 'and', 'conditions' => []];
-            $data['actions'] = [];
-        } else {
-            $data = $request->validate([
-                'name' => 'nullable|string|max:200',
-                'description' => 'nullable|string',
-                'condition_logic' => 'required|array',
-                'actions' => 'required|array',
-                'sort_order' => 'nullable|integer',
-                'is_active' => 'nullable|boolean',
-            ]);
+            return $this->error('Server error: ' . $e->getMessage(), 500);
         }
-
-        $data['workflow_version_id'] = $version->id;
-        $rule = WorkflowRule::create($data);
-        return $this->success($rule, '', [], 201);
     }
 
-    public function updateRule(Request $request, string $workflowId, string $versionId, string $ruleId): JsonResponse
+    /**
+     * Get a specific rule
+     */
+    public function getRule(string $versionId, string $ruleId): JsonResponse
     {
-        $workflow = Workflow::findOrFail($workflowId);
-        $version = $workflow->versions()->where('id', $versionId)->firstOrFail();
-        $rule = $version->rules()->where('id', $ruleId)->firstOrFail();
-        $this->authorize('update', $workflow);
+        try {
+            $user = Auth::user();
+            
+            if (!$user) {
+                return $this->error('Unauthorized', 401);
+            }
 
-        if (!$version->isDraft()) {
-            return $this->error('لا يمكن تعديل نسخة منشورة أو مؤرشفة', 422);
-        }
+            $rule = WorkflowRule::where('workflow_version_id', $versionId)
+                ->where('id', $ruleId)
+                ->first();
 
-        $ruleType = $request->input('rule_type', $rule->rule_type);
+            if (!$rule) {
+                return $this->error('Rule not found', 404);
+            }
 
-        if ($ruleType === 'case_based') {
-            $data = $request->validate([
-                'name' => 'nullable|string|max:200',
-                'description' => 'nullable|string',
-                'rule_type' => 'nullable|in:case_based',
-                'trigger_field_id' => 'nullable|string',
-                'cases' => 'nullable|array|min:1',
-                'cases.*.value' => 'required',
-                'cases.*.label' => 'nullable|string',
-                'cases.*.actions' => 'nullable|array|min:1',
-                'cases.*.priority' => 'nullable|integer',
-                'cases.*.compound_condition' => 'nullable|array',
-                'default_actions' => 'nullable|array',
-                'match_mode' => 'nullable|in:exact,contains,pattern,in',
-                'sort_order' => 'nullable|integer',
-                'is_active' => 'nullable|boolean',
+            return $this->success([
+                'rule' => $rule,
+            ], 'Rule retrieved successfully');
+        } catch (\Exception $e) {
+            Log::error('[WorkflowVersionController] getRule error', [
+                'error' => $e->getMessage(),
             ]);
+            return $this->error('Server error: ' . $e->getMessage(), 500);
+        }
+    }
 
-            // Ensure condition_logic is set for case-based rules
-            if (!isset($data['condition_logic'])) {
-                $data['condition_logic'] = $rule->condition_logic ?? ['operator' => 'and', 'conditions' => []];
+    /**
+     * Create a new rule
+     */
+    public function createRule(Request $request, string $versionId): JsonResponse
+    {
+        try {
+            $user = Auth::user();
+            
+            if (!$user) {
+                return $this->error('Unauthorized', 401);
             }
-            if (!isset($data['actions'])) {
-                $data['actions'] = $rule->actions ?? [];
+
+            $version = WorkflowVersion::find($versionId);
+
+            if (!$version) {
+                return $this->error('Workflow version not found', 404);
             }
-        } else {
-            $data = $request->validate([
-                'name' => 'nullable|string|max:200',
-                'description' => 'nullable|string',
+
+            $validated = $request->validate([
+                'name' => 'required|string|max:255',
+                'name_ar' => 'nullable|string|max:255',
+                'rule_type' => 'required|in:simple,case,validation,enterprise,routing,financial,realtime',
+                'priority' => 'required|integer|min:0',
+                'is_active' => 'boolean',
                 'condition_logic' => 'nullable|array',
+                'conditions' => 'nullable|array',
                 'actions' => 'nullable|array',
-                'sort_order' => 'nullable|integer',
-                'is_active' => 'nullable|boolean',
+                'cases' => 'nullable|array',
             ]);
+
+            $rule = WorkflowRule::create([
+                'workflow_version_id' => $versionId,
+                'name' => $validated['name'],
+                'name_ar' => $validated['name_ar'] ?? null,
+                'rule_type' => $validated['rule_type'],
+                'condition_logic' => $validated['condition_logic'] ?? $validated['conditions'] ?? [],
+                'actions' => $validated['actions'] ?? [],
+                'cases' => $validated['cases'] ?? [],
+                'sort_order' => $validated['priority'],
+                'is_active' => $validated['is_active'] ?? true,
+            ]);
+
+            Log::info('[WorkflowVersionController] Rule created', [
+                'rule_id' => $rule->id,
+                'version_id' => $versionId,
+                'user_id' => $user->id,
+            ]);
+
+            return $this->success([
+                'rule' => $rule,
+            ], 'Rule created successfully', [], 201);
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            return $this->error($e->getMessage(), 422);
+        } catch (\Exception $e) {
+            Log::error('[WorkflowVersionController] createRule error', [
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
+            ]);
+            return $this->error('Server error: ' . $e->getMessage(), 500);
         }
-
-        $rule->update($data);
-        return $this->success($rule->fresh());
-    }
-
-    public function destroyRule(string $workflowId, string $versionId, string $ruleId): JsonResponse
-    {
-        $workflow = Workflow::findOrFail($workflowId);
-        $version = $workflow->versions()->where('id', $versionId)->firstOrFail();
-        $rule = $version->rules()->where('id', $ruleId)->firstOrFail();
-        $this->authorize('update', $workflow);
-
-        if (!$version->isDraft()) {
-            return $this->error('لا يمكن تعديل نسخة منشورة أو مؤرشفة', 422);
-        }
-
-        $rule->delete();
-        return $this->success([], 'تم حذف القاعدة');
-    }
-
-    public function simulateRule(Request $request, string $workflowId, string $versionId, string $ruleId): JsonResponse
-    {
-        $workflow = Workflow::findOrFail($workflowId);
-        $version = $workflow->versions()->where('id', $versionId)->firstOrFail();
-        $rule = $version->rules()->where('id', $ruleId)->firstOrFail();
-        $this->authorize('view', $workflow);
-
-        $data = $request->validate([
-            'test_values' => 'required|array',
-        ]);
-
-        $branchingEngine = app(\App\Services\ConditionalBranchingEngine::class);
-        $result = $branchingEngine->simulate($rule, $data['test_values']);
-
-        return $this->success($result);
-    }
-
-    // --- Validation Rules ---
-
-    public function storeValidationRule(Request $request, string $workflowId, string $versionId): JsonResponse
-    {
-        $workflow = Workflow::findOrFail($workflowId);
-        $version = $workflow->versions()->where('id', $versionId)->firstOrFail();
-        $this->authorize('update', $workflow);
-
-        if (!$version->isDraft()) {
-            return $this->error('لا يمكن تعديل نسخة منشورة أو مؤرشفة', 422);
-        }
-
-        $data = $request->validate([
-            'name' => 'nullable|string|max:200',
-            'description' => 'nullable|string',
-            'validation_type' => 'required|in:duplicate_check,exists,not_exists,cross_register_check,dynamic_search,multi_field,register_search,query_builder,sql,field_existence_check',
-            'target_register_id' => 'nullable|string|exists:registers,id',
-            'trigger_field_id' => 'nullable|string',
-            'trigger_conditions' => 'nullable|array',
-            'target_fields' => 'nullable|array',
-            'query_conditions' => 'nullable|array',
-            'sql_query' => 'nullable|string',
-            'sql_condition' => 'nullable|string|max:100',
-            'route_config' => 'nullable|array',
-            'lookup_config' => 'nullable|array',
-            'field_effects' => 'nullable|array',
-            'response_type' => 'nullable|in:error,warning,confirm',
-            'error_message_ar' => 'nullable|string|max:500',
-            'error_message_en' => 'nullable|string|max:500',
-            'confirm_message_ar' => 'nullable|string|max:500',
-            'confirm_message_en' => 'nullable|string|max:500',
-            'sort_order' => 'nullable|integer',
-            'is_active' => 'nullable|boolean',
-            'rule_config' => 'nullable|array',
-            'priority' => 'nullable|integer|min:1|max:10000',
-            'category' => 'nullable|string|max:50',
-        ]);
-
-        $data['workflow_version_id'] = $version->id;
-        $rule = \App\Models\ValidationRule::create($data);
-        return $this->success($rule->load('targetRegister'), '', [], 201);
-    }
-
-    public function updateValidationRule(Request $request, string $workflowId, string $versionId, string $ruleId): JsonResponse
-    {
-        $workflow = Workflow::findOrFail($workflowId);
-        $version = $workflow->versions()->where('id', $versionId)->firstOrFail();
-        $rule = \App\Models\ValidationRule::where('workflow_version_id', $versionId)->where('id', $ruleId)->firstOrFail();
-        $this->authorize('update', $workflow);
-
-        if (!$version->isDraft()) {
-            return $this->error('لا يمكن تعديل نسخة منشورة أو مؤرشفة', 422);
-        }
-
-        $data = $request->validate([
-            'name' => 'nullable|string|max:200',
-            'description' => 'nullable|string',
-            'validation_type' => 'nullable|in:duplicate_check,exists,not_exists,cross_register_check,dynamic_search,multi_field,register_search,query_builder,sql,field_existence_check',
-            'target_register_id' => 'nullable|string|exists:registers,id',
-            'trigger_field_id' => 'nullable|string',
-            'trigger_conditions' => 'nullable|array',
-            'target_fields' => 'nullable|array',
-            'query_conditions' => 'nullable|array',
-            'sql_query' => 'nullable|string',
-            'sql_condition' => 'nullable|string|max:100',
-            'route_config' => 'nullable|array',
-            'lookup_config' => 'nullable|array',
-            'field_effects' => 'nullable|array',
-            'response_type' => 'nullable|in:error,warning,confirm',
-            'error_message_ar' => 'nullable|string|max:500',
-            'error_message_en' => 'nullable|string|max:500',
-            'confirm_message_ar' => 'nullable|string|max:500',
-            'confirm_message_en' => 'nullable|string|max:500',
-            'sort_order' => 'nullable|integer',
-            'is_active' => 'nullable|boolean',
-            'rule_config' => 'nullable|array',
-            'priority' => 'nullable|integer|min:1|max:10000',
-            'category' => 'nullable|string|max:50',
-        ]);
-
-        $rule->update($data);
-        return $this->success($rule->fresh()->load('targetRegister'));
-    }
-
-    public function destroyValidationRule(string $workflowId, string $versionId, string $ruleId): JsonResponse
-    {
-        $workflow = Workflow::findOrFail($workflowId);
-        $version = $workflow->versions()->where('id', $versionId)->firstOrFail();
-        $rule = \App\Models\ValidationRule::where('workflow_version_id', $versionId)->where('id', $ruleId)->firstOrFail();
-        $this->authorize('update', $workflow);
-
-        if (!$version->isDraft()) {
-            return $this->error('لا يمكن تعديل نسخة منشورة أو مؤرشفة', 422);
-        }
-
-        $rule->delete();
-        return $this->success([], 'تم حذف قاعدة التحقق');
-    }
-
-    public function reorderValidationRules(Request $request, string $workflowId, string $versionId): JsonResponse
-    {
-        $workflow = Workflow::findOrFail($workflowId);
-        $version = $workflow->versions()->where('id', $versionId)->firstOrFail();
-        $this->authorize('update', $workflow);
-
-        if (!$version->isDraft()) {
-            return $this->error('لا يمكن تعديل نسخة منشورة أو مؤرشفة', 422);
-        }
-
-        $data = $request->validate([
-            'rules' => 'required|array',
-            'rules.*.id' => 'required|string',
-            'rules.*.sort_order' => 'required|integer',
-        ]);
-
-        DB::transaction(function () use ($version, $data) {
-            foreach ($data['rules'] as $ruleData) {
-                \App\Models\ValidationRule::where('workflow_version_id', $version->id)
-                    ->where('id', $ruleData['id'])
-                    ->update(['sort_order' => $ruleData['sort_order']]);
-            }
-        });
-
-        return $this->success(\App\Models\ValidationRule::where('workflow_version_id', $version->id)->orderBy('sort_order')->get());
-    }
-
-    public function simulateValidation(Request $request, string $workflowId, string $versionId): JsonResponse
-    {
-        $workflow = Workflow::findOrFail($workflowId);
-        $version = $workflow->versions()->where('id', $versionId)->firstOrFail();
-        $this->authorize('view', $workflow);
-
-        $data = $request->validate([
-            'test_values' => 'required|array',
-        ]);
-
-        $validationEngine = app(\App\Services\ValidationEngine::class);
-        $result = $validationEngine->simulate($versionId, $data['test_values']);
-
-        return $this->success($result);
-    }
-
-    public function getValidationRules(string $workflowId, string $versionId): JsonResponse
-    {
-        $workflow = Workflow::findOrFail($workflowId);
-        $version = $workflow->versions()->where('id', $versionId)->firstOrFail();
-        $this->authorize('view', $workflow);
-
-        $rules = \App\Models\ValidationRule::where('workflow_version_id', $versionId)
-            ->orderBy('sort_order')
-            ->with('targetRegister')
-            ->get();
-
-        return $this->success($rules);
-    }
-
-    public function simulateEnterprise(Request $request, string $workflowId, string $versionId): JsonResponse
-    {
-        $workflow = Workflow::findOrFail($workflowId);
-        $version = $workflow->versions()->where('id', $versionId)->firstOrFail();
-        $this->authorize('view', $workflow);
-
-        $data = $request->validate([
-            'test_values' => 'required|array',
-            'context' => 'nullable|array',
-        ]);
-
-        $engine = app(\App\Services\EnterpriseRuleEngine::class);
-        $result = $engine->simulate($versionId, $data['test_values'], $data['context'] ?? []);
-
-        return $this->success($result);
     }
 
     /**
-     * Real-time field validation — triggered on field change.
-     * Returns routing decisions for field_existence_check rules.
+     * Update a rule
      */
-    public function validateField(Request $request, string $workflowId, string $versionId): JsonResponse
+    public function updateRule(Request $request, string $versionId, string $ruleId): JsonResponse
     {
-        $workflow = Workflow::findOrFail($workflowId);
-        $version = $workflow->versions()->where('id', $versionId)->firstOrFail();
-        $this->authorize('view', $workflow);
-
-        $data = $request->validate([
-            'field_id' => 'required|string',
-            'field_value' => 'required',
-            'context_values' => 'nullable|array', // Other field values for multi-field lookups
-        ]);
-
-        $values = array_merge($data['context_values'] ?? [], [
-            $data['field_id'] => $data['field_value'],
-        ]);
-
-        $validationEngine = app(\App\Services\ValidationEngine::class);
-
-        // Only run field_existence_check rules for this specific field
-        $rules = \App\Models\ValidationRule::where('workflow_version_id', $versionId)
-            ->where('validation_type', 'field_existence_check')
-            ->where('trigger_field_id', $data['field_id'])
-            ->where('is_active', true)
-            ->get();
-
-        $results = [];
-        $hasRoutingDecision = false;
-        $routingDecision = null;
-
-        foreach ($rules as $rule) {
-            $result = $validationEngine->runValidation($rule, $values, []);
-            $results[] = $result;
-
-            if ($result['status'] === 'found') {
-                $hasRoutingDecision = true;
-                $routingDecision = $result;
+        try {
+            $user = Auth::user();
+            
+            if (!$user) {
+                return $this->error('Unauthorized', 401);
             }
-        }
 
-        return $this->success([
-            'field_id' => $data['field_id'],
-            'field_value' => $data['field_value'],
-            'has_routing_decision' => $hasRoutingDecision,
-            'routing_decision' => $routingDecision,
-            'all_results' => $results,
-        ]);
+            $rule = WorkflowRule::where('workflow_version_id', $versionId)
+                ->where('id', $ruleId)
+                ->first();
+
+            if (!$rule) {
+                return $this->error('Rule not found', 404);
+            }
+
+            $validated = $request->validate([
+                'name' => 'sometimes|string|max:255',
+                'name_ar' => 'nullable|string|max:255',
+                'priority' => 'sometimes|integer|min:0',
+                'is_active' => 'boolean',
+                'conditions' => 'nullable|array',
+                'actions' => 'nullable|array',
+                'cases' => 'nullable|array',
+            ]);
+
+            $rule->update($validated);
+
+            Log::info('[WorkflowVersionController] Rule updated', [
+                'rule_id' => $rule->id,
+                'version_id' => $versionId,
+                'user_id' => $user->id,
+            ]);
+
+            return $this->success([
+                'rule' => $rule->fresh(),
+            ], 'Rule updated successfully');
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            return $this->error($e->getMessage(), 422);
+        } catch (\Exception $e) {
+            Log::error('[WorkflowVersionController] updateRule error', [
+                'error' => $e->getMessage(),
+            ]);
+            return $this->error('Server error: ' . $e->getMessage(), 500);
+        }
+    }
+
+    /**
+     * Delete a rule
+     */
+    public function deleteRule(string $versionId, string $ruleId): JsonResponse
+    {
+        try {
+            $user = Auth::user();
+            
+            if (!$user) {
+                return $this->error('Unauthorized', 401);
+            }
+
+            $rule = WorkflowRule::where('workflow_version_id', $versionId)
+                ->where('id', $ruleId)
+                ->first();
+
+            if (!$rule) {
+                return $this->error('Rule not found', 404);
+            }
+
+            $rule->delete();
+
+            Log::info('[WorkflowVersionController] Rule deleted', [
+                'rule_id' => $ruleId,
+                'version_id' => $versionId,
+                'user_id' => $user->id,
+            ]);
+
+            return $this->success([], 'Rule deleted successfully');
+        } catch (\Exception $e) {
+            Log::error('[WorkflowVersionController] deleteRule error', [
+                'error' => $e->getMessage(),
+            ]);
+            return $this->error('Server error: ' . $e->getMessage(), 500);
+        }
+    }
+
+    /**
+     * Get all validation rules for a workflow version
+     */
+    public function getValidationRules(string $versionId): JsonResponse
+    {
+        try {
+            $user = Auth::user();
+            
+            if (!$user) {
+                return $this->error('Unauthorized', 401);
+            }
+
+            $version = WorkflowVersion::find($versionId);
+
+            if (!$version) {
+                return $this->error('Workflow version not found', 404);
+            }
+
+            $rules = ValidationRule::where('workflow_version_id', $versionId)
+                ->orderBy('priority')
+                ->get();
+
+            return $this->success([
+                'rules' => $rules,
+            ], 'Validation rules retrieved successfully');
+        } catch (\Exception $e) {
+            Log::error('[WorkflowVersionController] getValidationRules error', [
+                'error' => $e->getMessage(),
+            ]);
+            return $this->error('Server error: ' . $e->getMessage(), 500);
+        }
+    }
+
+    /**
+     * Create a validation rule
+     */
+    public function createValidationRule(Request $request, string $versionId): JsonResponse
+    {
+        try {
+            $user = Auth::user();
+            
+            if (!$user) {
+                return $this->error('Unauthorized', 401);
+            }
+
+            $version = WorkflowVersion::find($versionId);
+
+            if (!$version) {
+                return $this->error('Workflow version not found', 404);
+            }
+
+            $validated = $request->validate([
+                'name' => 'required|string|max:255',
+                'name_ar' => 'nullable|string|max:255',
+                'validation_type' => 'required|string',
+                'field_id' => 'required|string',
+                'is_active' => 'boolean',
+                'error_message' => 'nullable|string',
+                'error_message_ar' => 'nullable|string',
+                'priority' => 'nullable|integer|min:0',
+            ]);
+
+            $rule = ValidationRule::create([
+                'workflow_version_id' => $versionId,
+                'name' => $validated['name'],
+                'name_ar' => $validated['name_ar'] ?? null,
+                'validation_type' => $validated['validation_type'],
+                'field_id' => $validated['field_id'],
+                'is_active' => $validated['is_active'] ?? true,
+                'error_message' => $validated['error_message'] ?? null,
+                'error_message_ar' => $validated['error_message_ar'] ?? null,
+                'priority' => $validated['priority'] ?? 0,
+                'created_by' => $user->id,
+            ]);
+
+            Log::info('[WorkflowVersionController] Validation rule created', [
+                'rule_id' => $rule->id,
+                'version_id' => $versionId,
+                'user_id' => $user->id,
+            ]);
+
+            return $this->success([
+                'rule' => $rule,
+            ], 'Validation rule created successfully', [], 201);
+        } catch (\Illuminate\Validation\ValidationException $e) {
+            return $this->error($e->getMessage(), 422);
+        } catch (\Exception $e) {
+            Log::error('[WorkflowVersionController] createValidationRule error', [
+                'error' => $e->getMessage(),
+                'trace' => $e->getTraceAsString(),
+            ]);
+            return $this->error('Server error: ' . $e->getMessage(), 500);
+        }
     }
 }

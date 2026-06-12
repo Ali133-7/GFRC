@@ -4,6 +4,7 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { RegisterField } from "@/types/register";
 import { formatCurrency } from "@/utils/formatCurrency";
+import { formatNumber } from "@/utils/formatNumber";
 import { GovSelect } from "@/components/ui/GovSelect";
 
 interface DynamicReceiptFormProps {
@@ -144,7 +145,7 @@ export default function DynamicReceiptForm({
                   case "calculated":
                     return (
                       <input
-                        value={financialTotal.toFixed(3)}
+                        value={formatNumber(financialTotal)}
                         readOnly
                         style={{ ...inputStyle(false), background: "var(--color-background-secondary)", color: "var(--color-text-tertiary)" }}
                       />

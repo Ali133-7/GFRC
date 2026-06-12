@@ -19,6 +19,7 @@ class WorkflowExecution extends Model
         'values_snapshot', 'calculated_items', 'total_amount', 'receipt_id',
         'branch_state', 'routing_history', 'preserved_values', 'state_mapping',
         'field_states', 'rule_results', 'validation_results', 'routing_decisions', 'financial_trace',
+        'execution_status', 'execution_error',
         'last_saved_at',
         'started_by', 'started_at', 'completed_at', 'cancelled_at',
         'cancel_reason', 'ip_address', 'user_agent',
@@ -39,6 +40,8 @@ class WorkflowExecution extends Model
         'validation_results' => 'array',
         'routing_decisions' => 'array',
         'financial_trace' => 'array',
+        'execution_status' => 'string',
+        'execution_error' => 'string',
         'last_saved_at' => 'datetime',
         'started_at' => 'datetime',
         'completed_at' => 'datetime',
@@ -272,6 +275,40 @@ class WorkflowExecution extends Model
     public function getRoutingHistory(): array
     {
         return $this->routing_history ?? [];
+    }
+
+    // Execution Status Methods for Real-Time Rule Execution
+    
+    public function setExecutionStatus(string $status): void
+    {
+        $this->execution_status = $status;
+        $this->save();
+    }
+
+    public function getExecutionStatus(): string
+    {
+        return $this->execution_status ?? 'IDLE';
+    }
+
+    public function setExecutionError(?string $error): void
+    {
+        $this->execution_error = $error;
+        $this->save();
+    }
+
+    public function getExecutionError(): ?string
+    {
+        return $this->execution_error;
+    }
+
+    public function isExecutionReady(): bool
+    {
+        return $this->getExecutionStatus() === 'READY';
+    }
+
+    public function isExecutionInProgress(): bool
+    {
+        return in_array($this->getExecutionStatus(), ['EVALUATING', 'CALCULATING']);
     }
 
     public function hasRedirect(): bool

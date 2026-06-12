@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/Button";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
 import { usePermissions } from "@/hooks/usePermissions";
 import { formatCurrency } from "@/utils/formatCurrency";
+import { formatNumber } from "@/utils/formatNumber";
 import { todayISO } from "@/utils/formatDate";
 
 type TabKey = "daily" | "monthly" | "user" | "register";
@@ -98,8 +99,8 @@ export default function ReportsPage() {
             <>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: "10px", marginBottom: "16px" }}>
                 <StatBox label="إجمالي المقبوضات" value={formatCurrency(parseFloat(dailyQ.data.total_amount ?? "0"))} />
-                <StatBox label="عدد الوصولات"      value={String(dailyQ.data.receipts_count ?? 0)} />
-                <StatBox label="المرحّلة"          value={String(dailyQ.data.issued_count ?? 0)} />
+                <StatBox label="عدد الوصولات"      value={formatNumber(dailyQ.data.receipts_count ?? 0)} />
+                <StatBox label="المرحّلة"          value={formatNumber(dailyQ.data.issued_count ?? 0)} />
                 <StatBox label="اليوم"              value={date} />
               </div>
               {dailyQ.data.by_register && dailyQ.data.by_register.length > 0 && (
@@ -111,7 +112,7 @@ export default function ReportsPage() {
                     <tr key={i} style={{ borderTop: "0.5px solid var(--color-border-tertiary)" }}>
                       <td style={{ padding: "8px 12px" }}>{row.register_name}</td>
                       <td style={{ padding: "8px 12px", fontFamily: "var(--font-mono)", fontSize: "12px" }}>{row.register_code}</td>
-                      <td style={{ padding: "8px 12px" }}>{row.count}</td>
+                      <td style={{ padding: "8px 12px" }}>{formatNumber(row.count)}</td>
                       <td style={{ padding: "8px 12px", fontFamily: "var(--font-mono)", fontWeight: 500 }}>{formatCurrency(parseFloat(row.total ?? "0"))}</td>
                     </tr>
                   ))}</tbody>
@@ -139,7 +140,7 @@ export default function ReportsPage() {
             <>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: "10px", marginBottom: "16px" }}>
                 <StatBox label="إجمالي الشهر" value={formatCurrency(parseFloat(monthlyQ.data.total_amount ?? "0"))} />
-                <StatBox label="عدد الوصولات"  value={String(monthlyQ.data.receipts_count ?? 0)} />
+                <StatBox label="عدد الوصولات"  value={formatNumber(monthlyQ.data.receipts_count ?? 0)} />
                 <StatBox label="الشهر"          value={`${month}/${year}`} />
               </div>
               {monthlyQ.data.by_day && monthlyQ.data.by_day.length > 0 && (
@@ -150,7 +151,7 @@ export default function ReportsPage() {
                   <tbody>{monthlyQ.data.by_day.map((row, i) => (
                     <tr key={i} style={{ borderTop: "0.5px solid var(--color-border-tertiary)" }}>
                       <td style={{ padding: "8px 12px", fontFamily: "var(--font-mono)" }}>{row.date}</td>
-                      <td style={{ padding: "8px 12px" }}>{row.count}</td>
+                      <td style={{ padding: "8px 12px" }}>{formatNumber(row.count)}</td>
                       <td style={{ padding: "8px 12px", fontFamily: "var(--font-mono)", fontWeight: 500 }}>{formatCurrency(parseFloat(row.total ?? "0"))}</td>
                     </tr>
                   ))}</tbody>
@@ -180,8 +181,8 @@ export default function ReportsPage() {
               <tbody>{(userQ.data ?? []).map((row) => (
                 <tr key={row.user_id} style={{ borderTop: "0.5px solid var(--color-border-tertiary)" }}>
                   <td style={{ padding: "8px 12px", fontWeight: 500 }}>{row.user_name}</td>
-                  <td style={{ padding: "8px 12px" }}>{row.receipts_count}</td>
-                  <td style={{ padding: "8px 12px" }}>{row.issued_count}</td>
+                  <td style={{ padding: "8px 12px" }}>{formatNumber(row.receipts_count)}</td>
+                  <td style={{ padding: "8px 12px" }}>{formatNumber(row.issued_count)}</td>
                   <td style={{ padding: "8px 12px", fontFamily: "var(--font-mono)", fontWeight: 500 }}>{formatCurrency(parseFloat(row.total_amount ?? "0"))}</td>
                 </tr>
               ))}</tbody>
@@ -210,7 +211,7 @@ export default function ReportsPage() {
                 <tr key={row.register_id} style={{ borderTop: "0.5px solid var(--color-border-tertiary)" }}>
                   <td style={{ padding: "8px 12px", fontWeight: 500 }}>{row.register_name}</td>
                   <td style={{ padding: "8px 12px", fontFamily: "var(--font-mono)", fontSize: "12px" }}>{row.register_code}</td>
-                  <td style={{ padding: "8px 12px" }}>{row.receipts_count}</td>
+                  <td style={{ padding: "8px 12px" }}>{formatNumber(row.receipts_count)}</td>
                   <td style={{ padding: "8px 12px", fontFamily: "var(--font-mono)", fontWeight: 500 }}>{formatCurrency(parseFloat(row.total_amount ?? "0"))}</td>
                 </tr>
               ))}</tbody>

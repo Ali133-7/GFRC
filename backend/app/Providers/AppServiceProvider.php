@@ -8,8 +8,10 @@ use App\Models\RegisterField;
 use App\Models\Setting;
 use App\Models\User;
 use App\Models\Workflow;
+use App\Models\WorkflowExecution;
 use App\Observers\AuditableObserver;
 use App\Policies\ReceiptPolicy;
+use App\Policies\WorkflowExecutionPolicy;
 use App\Policies\WorkflowPolicy;
 use Illuminate\Cache\RateLimiting\Limit;
 use Illuminate\Support\Facades\Gate;
@@ -38,6 +40,7 @@ class AppServiceProvider extends ServiceProvider
 
         Gate::policy(Workflow::class, WorkflowPolicy::class);
         Gate::policy(Receipt::class, ReceiptPolicy::class);
+        Gate::policy(WorkflowExecution::class, WorkflowExecutionPolicy::class);
 
         // Allow super_admin to bypass all permission checks
         Gate::before(function ($user, $ability) {

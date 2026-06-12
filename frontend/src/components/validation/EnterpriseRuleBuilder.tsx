@@ -1,8 +1,9 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useMemo, useRef } from "react";
 import type { WorkflowField } from "@/types/workflow";
 import { workflowVersionApi } from "@/api/workflows";
 import { useOfficialFees } from "@/hooks/useFees";
 import { GovSelect, GovSelectMulti } from "@/components/ui/GovSelect";
+import { formatNumber } from "@/utils/formatNumber";
 import type {
   EnterpriseRule,
   ConditionNode,
@@ -14,6 +15,21 @@ import type {
 } from "@/types/enterprise-rule-engine";
 import { OPERATOR_METADATA as OPERATORS, ACTION_METADATA as ACTIONS } from "@/types/enterprise-rule-engine";
 import { fieldKey, findFieldByKey, fieldDisplayLabel } from "@/components/rules/fieldKey";
+
+// Formula Assistant Types
+interface FormulaField {
+  key: string;
+  label: string;
+  type: string;
+  isFinancial: boolean;
+}
+
+interface FormulaPreview {
+  valid: boolean;
+  result?: string;
+  error?: string;
+  steps?: string[];
+}
 
 interface EnterpriseRuleBuilderProps {
   workflowId: string;
@@ -114,21 +130,27 @@ export default function EnterpriseRuleBuilder({
   onSave,
   onCancel,
 }: EnterpriseRuleBuilderProps) {
+  // CRITICAL FIX: Extract data from rule_config structure
+  // API returns: rule.rule_config.{conditions, actions, else_actions, cases}
+  // Builder expects: rule.{conditions, actions, else_actions, cases}
+  const ruleConfig = (rule as any)?.rule_config ?? rule; // Fallback for backward compatibility
+  
   const [name, setName] = useState(rule?.name ?? "");
   const [description, setDescription] = useState(rule?.description ?? "");
+  const [realtimeEnabled, setRealtimeEnabled] = useState(rule?.realtime_enabled ?? true);
   const [category, setCategory] = useState(rule?.category ?? "validation");
   const [priority, setPriority] = useState(rule?.priority ?? 5000);
   const [conditions, setConditions] = useState<ConditionNode[]>(
-    rule?.conditions ?? [{ id: generateId(), type: "simple", field_id: "", operator: "equals", value: "" }]
+    ruleConfig?.conditions ?? [{ id: generateId(), type: "simple", field_id: "", operator: "equals", value: "" }]
   );
   const [actions, setActions] = useState<RuleAction[]>(
-    rule?.actions ?? []
+    ruleConfig?.actions ?? []
   );
   const [elseActions, setElseActions] = useState<RuleAction[]>(
-    rule?.else_actions ?? []
+    ruleConfig?.else_actions ?? []
   );
-  const [cases, setCases] = useState<RuleCase[]>(rule?.cases ?? []);
-  const [useCases, setUseCases] = useState(rule?.cases ? true : false);
+  const [cases, setCases] = useState<RuleCase[]>(ruleConfig?.cases ?? []);
+  const [useCases, setUseCases] = useState(ruleConfig?.cases && ruleConfig.cases.length > 0 ? true : false);
   const [conflictResolution, setConflictResolution] = useState(rule?.conflict_resolution ?? "highest_priority");
   const [saving, setSaving] = useState(false);
   const [errors, setErrors] = useState<string[]>([]);
@@ -136,6 +158,27 @@ export default function EnterpriseRuleBuilder({
   const [simMode, setSimMode] = useState(false);
   const [simValues, setSimValues] = useState<Record<string, string>>({});
   const [simResult, setSimResult] = useState<any>(null);
+  
+  // DEBUG: Log rule structure and field IDs on mount
+  console.log('[ENTERPRISE RULE BUILDER] Rule loaded:', {
+    hasRule: !!rule,
+    hasRuleConfig: !!(rule as any)?.rule_config,
+    ruleConfigKeys: ruleConfig ? Object.keys(ruleConfig) : [],
+    conditionsCount: ruleConfig?.conditions?.length ?? 0,
+    actionsCount: ruleConfig?.actions?.length ?? 0,
+    elseActionsCount: ruleConfig?.else_actions?.length ?? 0,
+    casesCount: ruleConfig?.cases?.length ?? 0,
+    actions: ruleConfig?.actions,
+  });
+  
+  // DEBUG: Log fields being passed
+  console.log('[ENTERPRISE RULE BUILDER] Fields count:', fields.length);
+  console.log('[ENTERPRISE RULE BUILDER] Fields:', fields.map(f => ({
+    workflow_field_id: f.id,
+    register_field_id: f.register_field_id,
+    fieldKey: fieldKey(f),
+    label: fieldDisplayLabel(f),
+  })));
 
   // Condition management
   const addCondition = () => {
@@ -237,6 +280,7 @@ export default function EnterpriseRuleBuilder({
         priority,
         conflict_resolution: conflictResolution,
         is_active: true,
+        realtime_enabled: realtimeEnabled,
         sort_order: rule?.sort_order ?? 0,
         rule_config: {
           conditions: useCases ? [] : conditions,
@@ -291,6 +335,21 @@ export default function EnterpriseRuleBuilder({
           ))}
         </div>
       )}
+
+      {/* Real-time execution checkbox */}
+      <div style={{ padding: "10px 18px", background: "var(--color-background-secondary)", borderBottom: "0.5px solid var(--color-border-tertiary)" }}>
+        <label style={{ display: "flex", alignItems: "center", gap: "8px", cursor: "pointer" }}>
+          <input
+            type="checkbox"
+            checked={realtimeEnabled}
+            onChange={(e) => setRealtimeEnabled(e.target.checked)}
+            style={{ width: "18px", height: "18px" }}
+          />
+          <span style={{ fontSize: "13px", fontWeight: 500, color: "var(--color-text-primary)" }}>
+            ☑ تنفيذ فوري (Real-time execution)
+          </span>
+        </label>
+      </div>
 
       {/* Simulation */}
       {simMode && (
@@ -566,7 +625,7 @@ export default function EnterpriseRuleBuilder({
                             <option value="">اختر الرسم...</option>
                             {officialFees?.map((fee) => {
                               const displayAmount = fee.resolved_amount ?? fee.amount;
-                              return <option key={fee.fee_code} value={fee.fee_code}>{fee.name_ar} ({fee.fee_code}) — {displayAmount?.toLocaleString("en")} د.ع</option>;
+                              return <option key={fee.fee_code} value={fee.fee_code}>{fee.name_ar} ({fee.fee_code}) — {formatNumber(displayAmount)} د.ع</option>;
                             })}
                           </select>
                         </>
@@ -587,6 +646,44 @@ export default function EnterpriseRuleBuilder({
                             updateCase(caseIdx, "actions", newCaseActions);
                           }} placeholder="نسبة الخصم %" style={{ ...inputStyle, flex: 1 }} />
                         </>
+                      )}
+                      {act.type === "multiply_and_add" && (
+                        <>
+                          <select value={act.source_field_id} onChange={(e) => {
+                            const newActions = [...caseItem.actions];
+                            newActions[actIdx] = { ...newActions[actIdx], source_field_id: e.target.value };
+                            updateCase(caseIdx, "actions", newActions);
+                          }} style={{ ...inputStyle, flex: 1 }} title="حقل الإدخال (عدد السجلات)">
+                            <option value="">حقل الإدخال (العدد)...</option>
+                            {fields.filter((f) => f.field_type === "number" || f.field_type === "decimal").map((f) => <option key={f.id} value={fieldKey(f)}>{fieldDisplayLabel(f)}</option>)}
+                          </select>
+                          <input value={String(act.multiplier ?? "")} onChange={(e) => {
+                            const newCaseActions = [...caseItem.actions];
+                            newCaseActions[actIdx] = { ...newCaseActions[actIdx], multiplier: e.target.value };
+                            updateCase(caseIdx, "actions", newCaseActions);
+                          }} placeholder="القيمة الثابتة (مثلاً 50000)" style={{ ...inputStyle, flex: 1 }} />
+                          <select value={act.target_field_id} onChange={(e) => {
+                            const newActions = [...caseItem.actions];
+                            newActions[actIdx] = { ...newActions[actIdx], target_field_id: e.target.value };
+                            updateCase(caseIdx, "actions", newActions);
+                          }} style={{ ...inputStyle, flex: 1 }} title="الحقل المستهدف">
+                            <option value="">الحقل المستهدف (الإجمالي)...</option>
+                            {fields.filter((f) => f.is_financial || f.field_type === "decimal" || f.field_type === "number").map((f) => <option key={f.id} value={fieldKey(f)}>{fieldDisplayLabel(f)}</option>)}
+                          </select>
+                        </>
+                      )}
+                      {act.type === "calculate" && (
+                        <FormulaAssistant
+                          fields={fields}
+                          action={act}
+                          onUpdate={(updatedAction) => {
+                            // CRITICAL FIX: Update ALL properties in a single setCases call
+                            const newActions = [...caseItem.actions];
+                            newActions[actIdx] = updatedAction;
+                            updateCase(actIdx, "actions", newActions);
+                            console.log('[FORMULA ASSISTANT] Case action updated:', updatedAction);
+                          }}
+                        />
                       )}
                     </div>
                   ))}
@@ -627,7 +724,7 @@ export default function EnterpriseRuleBuilder({
                     <select value={String(act.value ?? "")} onChange={(e) => updateAction(idx, "value", e.target.value)} style={{ ...inputStyle, flex: 1 }}>
                       <option value="">اختر الرسم...</option>
                       {officialFees?.map((fee) => (
-                        <option key={fee.fee_code} value={fee.fee_code}>{fee.name_ar} ({fee.fee_code}) — {fee.amount?.toLocaleString("en")} د.ع</option>
+                        <option key={fee.fee_code} value={fee.fee_code}>{fee.name_ar} ({fee.fee_code}) — {formatNumber(fee.amount)} د.ع</option>
                       ))}
                     </select>
                   </>
@@ -640,6 +737,31 @@ export default function EnterpriseRuleBuilder({
                     </select>
                     <input value={String(act.value ?? "")} onChange={(e) => updateAction(idx, "value", e.target.value)} placeholder="نسبة الخصم %" style={{ ...inputStyle, flex: 1 }} />
                   </>
+                )}
+                {act.type === "multiply_and_add" && (
+                  <>
+                    <select value={act.source_field_id} onChange={(e) => updateAction(idx, "source_field_id", e.target.value)} style={{ ...inputStyle, flex: 1 }} title="حقل الإدخال (عدد السجلات)">
+                      <option value="">حقل الإدخال (العدد)...</option>
+                      {fields.filter((f) => f.field_type === "number" || f.field_type === "decimal").map((f) => <option key={f.id} value={fieldKey(f)}>{fieldDisplayLabel(f)}</option>)}
+                    </select>
+                    <input value={String(act.multiplier ?? "")} onChange={(e) => updateAction(idx, "multiplier", e.target.value)} placeholder="القيمة الثابتة (50000)" style={{ ...inputStyle, flex: 1 }} />
+                    <select value={act.target_field_id} onChange={(e) => updateAction(idx, "target_field_id", e.target.value)} style={{ ...inputStyle, flex: 1 }} title="الحقل المستهدف">
+                      <option value="">الحقل المستهدف (الإجمالي)...</option>
+                      {fields.filter((f) => f.is_financial || f.field_type === "decimal" || f.field_type === "number").map((f) => <option key={f.id} value={fieldKey(f)}>{fieldDisplayLabel(f)}</option>)}
+                    </select>
+                  </>
+                )}
+                {act.type === "calculate" && (
+                  <FormulaAssistant
+                    fields={fields}
+                    action={act}
+                    onUpdate={(updatedAction) => {
+                      // CRITICAL FIX: Update ALL properties in a single setActions call
+                      // to prevent state overwrite issues
+                      setActions(actions.map((a, i) => (i === idx ? updatedAction : a)));
+                      console.log('[FORMULA ASSISTANT] Action updated:', updatedAction);
+                    }}
+                  />
                 )}
                 {actions.length > 0 && (
                   <button onClick={() => removeAction(idx)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: "14px", color: "var(--color-text-danger)" }}>×</button>
@@ -666,3 +788,381 @@ const inputStyle: React.CSSProperties = { padding: "6px 10px", fontSize: "12px",
 const btnPrimary: React.CSSProperties = { padding: "6px 14px", fontSize: "12px", background: "var(--color-background-warning)", color: "var(--color-text-warning)", border: "0.5px solid var(--color-border-warning)", borderRadius: "6px", cursor: "pointer", fontFamily: "inherit", fontWeight: 500 };
 const btnSecondary: React.CSSProperties = { padding: "6px 14px", fontSize: "12px", background: "none", color: "var(--color-text-secondary)", border: "0.5px solid var(--color-border-secondary)", borderRadius: "6px", cursor: "pointer", fontFamily: "inherit" };
 const btnGhost: React.CSSProperties = { padding: "4px 10px", fontSize: "11px", background: "transparent", color: "var(--color-text-warning)", border: "0.5px dashed var(--color-border-warning)", borderRadius: "4px", cursor: "pointer", fontFamily: "inherit" };
+
+// ==================== FORMULA ASSISTANT COMPONENT ====================
+
+interface FormulaAssistantProps {
+  fields: WorkflowField[];
+  action: RuleAction;
+  onUpdate: (action: RuleAction) => void;
+}
+
+const FORMULA_OPERATORS = [
+  { symbol: '+', label: 'جمع', description: 'إضافة قيمتين' },
+  { symbol: '-', label: 'طرح', description: 'طرح قيمة من أخرى' },
+  { symbol: '*', label: 'ضرب', description: 'ضرب قيمتين' },
+  { symbol: '/', label: 'قسمة', description: 'قسمة قيمة على أخرى' },
+  { symbol: '(', label: 'قوس فتح', description: 'بداية مجموعة' },
+  { symbol: ')', label: 'قوس إغلاق', description: 'نهاية مجموعة' },
+];
+
+function FormulaAssistant({ fields, action, onUpdate }: FormulaAssistantProps) {
+  const [testValues, setTestValues] = useState<Record<string, string>>({});
+  const [preview, setPreview] = useState<FormulaPreview | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  // DEBUG: Log action changes
+  console.log('[FORMULA ASSISTANT] Render - action.value:', action.value, 'action.field_id:', action.field_id);
+
+  // Build available fields list
+  const availableFields: FormulaField[] = useMemo(() => {
+    console.log('[FORMULA ASSISTANT] Building fields list, input fields count:', fields.length);
+    const fieldsList = fields
+      .filter(f => {
+        const fieldType = f.field_type ?? f.registerField?.field_type ?? 'text';
+        return fieldType === 'number' || fieldType === 'decimal' || f.is_financial;
+      })
+      .map(f => {
+        const key = fieldKey(f);
+        const label = fieldDisplayLabel(f);
+        console.log('[FORMULA ASSISTANT] Field mapped:', { 
+          workflow_field_id: f.id, 
+          register_field_id: f.register_field_id, 
+          key: key, 
+          label: label,
+          type: f.field_type,
+          has_registerField: !!f.registerField
+        });
+        return {
+          key: key,
+          label: label,
+          type: f.field_type ?? f.registerField?.field_type ?? 'number',
+          isFinancial: f.is_financial ?? false,
+        };
+      });
+    console.log('[FORMULA ASSISTANT] Available fields count:', fieldsList.length);
+    console.log('[FORMULA ASSISTANT] Current action.value:', action.value);
+    return fieldsList;
+  }, [fields]);
+
+  // Insert text at cursor position
+  const insertAtCursor = useCallback((textToInsert: string) => {
+    console.log('[FORMULA ASSISTANT] insertAtCursor called with:', textToInsert);
+    console.log('[FORMULA ASSISTANT] textareaRef.current:', textareaRef.current);
+    console.log('[FORMULA ASSISTANT] Current action.value:', action.value);
+    
+    const textarea = textareaRef.current;
+    const currentValue = String(action.value ?? '');
+    
+    if (textarea) {
+      console.log('[FORMULA ASSISTANT] Textarea found');
+      console.log('[FORMULA ASSISTANT] selectionStart:', textarea.selectionStart);
+      console.log('[FORMULA ASSISTANT] selectionEnd:', textarea.selectionEnd);
+      console.log('[FORMULA ASSISTANT] currentValue:', currentValue);
+      
+      const start = textarea.selectionStart ?? currentValue.length;
+      const end = textarea.selectionEnd ?? currentValue.length;
+      const newValue = currentValue.substring(0, start) + textToInsert + currentValue.substring(end);
+      
+      console.log('[FORMULA ASSISTANT] New value:', newValue);
+      console.log('[FORMULA ASSISTANT] Calling onUpdate with:', { ...action, value: newValue });
+      
+      onUpdate({ ...action, value: newValue });
+      
+      console.log('[FORMULA ASSISTANT] onUpdate called, scheduling focus restore');
+      
+      // Restore focus and cursor position
+      setTimeout(() => {
+        console.log('[FORMULA ASSISTANT] Restoring focus');
+        textarea.focus();
+        const newCursorPos = start + textToInsert.length;
+        textarea.setSelectionRange(newCursorPos, newCursorPos);
+        console.log('[FORMULA ASSISTANT] Focus restored, cursor at:', newCursorPos);
+      }, 10);
+    } else {
+      console.log('[FORMULA ASSISTANT] Textarea NOT found, using fallback');
+      // Fallback: append to end
+      const newValue = currentValue ? `${currentValue}${textToInsert}` : textToInsert;
+      console.log('[FORMULA ASSISTANT] Fallback new value:', newValue);
+      onUpdate({ ...action, value: newValue });
+    }
+  }, [action, onUpdate]);
+
+  // Insert field reference at cursor position
+  const insertFieldRef = useCallback((fieldKey: string) => {
+    console.log('[FORMULA ASSISTANT] insertFieldRef called with fieldKey:', fieldKey);
+    const insertedValue = `{{${fieldKey}}}`;
+    console.log('[FORMULA ASSISTANT] Inserting:', insertedValue);
+    insertAtCursor(insertedValue);
+  }, [insertAtCursor]);
+
+  // Insert operator at cursor position
+  const insertOperator = useCallback((operator: string) => {
+    console.log('[FORMULA ASSISTANT] insertOperator called with:', operator);
+    insertAtCursor(operator);
+  }, [insertAtCursor]);
+
+  // Validate formula syntax
+  const validateFormula = useCallback(() => {
+    const formula = (action.value ?? '') as string;
+    const errors: string[] = [];
+
+    // Check for empty formula
+    if (!formula.trim()) {
+      errors.push('الصيغة فارغة');
+    }
+
+    // Check for balanced parentheses
+    const openParens = (formula.match(/\(/g) || []).length;
+    const closeParens = (formula.match(/\)/g) || []).length;
+    if (openParens !== closeParens) {
+      errors.push(`الأقواس غير متوازنة: ${openParens} فتح، ${closeParens} إغلاق`);
+    }
+
+    // Check for field references
+    const fieldRefs = formula.match(/\{\{([\w-]+)\}\}/g) || [];
+    if (fieldRefs.length === 0) {
+      errors.push('لا توجد مراجع حقول في الصيغة (استخدم {{اسم_الحقل}})');
+    }
+
+    // Check for invalid characters
+    const invalidChars = formula.replace(/[\w\s\+\-\*\/\(\)\.]/g, '');
+    if (invalidChars.includes('{{') || invalidChars.includes('}}')) {
+      // This is ok, it's part of field references
+    } else if (invalidChars.trim()) {
+      errors.push(`أحرف غير صالحة: ${invalidChars}`);
+    }
+
+    // Check field existence
+    fieldRefs.forEach((ref: string) => {
+      const fieldId = ref.replace(/[{}]/g, '');
+      const field = findFieldByKey(fields, fieldId);
+      if (!field) {
+        errors.push(`الحقل غير موجود: ${fieldId}`);
+      }
+    });
+
+    return errors;
+  }, [action.value, fields]);
+
+  // Calculate preview
+  const calculatePreview = useCallback(() => {
+    const formula = (action.value ?? '') as string;
+    const errors = validateFormula();
+
+    if (errors.length > 0) {
+      setPreview({ valid: false, error: errors.join('، ') });
+      return;
+    }
+
+    // Build test values
+    const values: Record<string, string> = {};
+    const fieldRefs = formula.match(/\{\{([\w-]+)\}\}/g) || [];
+    
+    fieldRefs.forEach((ref: string) => {
+      const fieldId = ref.replace(/[{}]/g, '');
+      values[fieldId] = testValues[fieldId] || '0';
+    });
+
+    // Simple evaluation (client-side preview only)
+    try {
+      let expression = formula;
+      
+      // Replace field references with test values
+      Object.entries(values).forEach(([fieldId, value]) => {
+        expression = expression.replace(new RegExp(`\\{\\{${fieldId}\\}\\}`, 'g'), value || '0');
+      });
+
+      // Safe evaluation using Function constructor (client-side only)
+      // eslint-disable-next-line no-new-func
+      const result = Function(`"use strict"; return (${expression})`)();
+      
+      const steps = [
+        `الصيغة: ${formula}`,
+        `القيم: ${Object.entries(values).map(([k, v]) => `${k}=${v}`).join('، ')}`,
+        `التعبير: ${expression}`,
+        `النتيجة: ${result}`,
+      ];
+
+      setPreview({ valid: true, result: result.toString(), steps });
+    } catch (e) {
+      setPreview({ valid: false, error: `خطأ في الحساب: ${(e as Error).message}` });
+    }
+  }, [action.value, testValues, validateFormula]);
+
+  return (
+    <div style={{ border: "0.5px solid var(--color-border-secondary)", borderRadius: "8px", padding: "12px", marginTop: "8px", backgroundColor: "var(--color-background-tertiary)" }}>
+      {/* Target Field */}
+      <div style={{ marginBottom: "12px" }}>
+        <label style={{ ...labelStyle }}>الحقل المستهدف</label>
+        <select
+          value={action.field_id ?? ''}
+          onChange={(e) => onUpdate({ ...action, field_id: e.target.value })}
+          style={{ ...inputStyle, width: "100%" }}
+        >
+          <option value="">اختر الحقل...</option>
+          {fields.map(f => (
+            <option key={f.id} value={fieldKey(f)}>{fieldDisplayLabel(f)}</option>
+          ))}
+        </select>
+      </div>
+
+      {/* Formula Editor */}
+      <div style={{ marginBottom: "12px" }}>
+        <label style={{ ...labelStyle }}>
+          الصيغة
+          <span style={{ fontSize: "10px", color: "var(--color-text-tertiary)", marginRight: "8px" }}>
+            استخدم {'{{}}'} للإشارة إلى الحقول
+          </span>
+        </label>
+        <textarea
+          ref={textareaRef}
+          value={String(action.value ?? '')}
+          onChange={(e) => onUpdate({ ...action, value: e.target.value })}
+          placeholder="{{records_count}} * 25000"
+          style={{ ...inputStyle, minHeight: "80px", fontFamily: "monospace", direction: "ltr" }}
+        />
+      </div>
+
+      {/* Available Fields */}
+      <div style={{ marginBottom: "12px" }}>
+        <label style={{ ...labelStyle }}>الحقول المتاحة</label>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: "6px", maxHeight: "200px", overflowY: "auto", padding: "8px", backgroundColor: "#fff", borderRadius: "6px", border: "0.5px solid var(--color-border-secondary)" }}>
+          {availableFields.map(field => (
+            <button
+              key={field.key}
+              onClick={() => {
+                console.log('[FORMULA ASSISTANT] Field button clicked:', field);
+                insertFieldRef(field.key);
+              }}
+              style={{
+                padding: "6px 10px",
+                fontSize: "11px",
+                background: "var(--color-background-secondary)",
+                border: "0.5px solid var(--color-border-secondary)",
+                borderRadius: "4px",
+                cursor: "pointer",
+                textAlign: "right",
+                fontFamily: "inherit",
+              }}
+              title={field.type}
+            >
+              <div style={{ fontWeight: 500 }}>{field.label}</div>
+              <div style={{ fontSize: "9px", color: "var(--color-text-tertiary)", fontFamily: "monospace" }}>
+                {field.key}
+              </div>
+              {field.isFinancial && (
+                <span style={{ fontSize: "9px", color: "var(--color-text-success)" }}> 💰</span>
+              )}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Operators */}
+      <div style={{ marginBottom: "12px" }}>
+        <label style={{ ...labelStyle }}>العوامل الرياضية</label>
+        <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
+          {FORMULA_OPERATORS.map(op => (
+            <button
+              key={op.symbol}
+              onClick={() => insertOperator(op.symbol)}
+              style={{
+                padding: "6px 12px",
+                fontSize: "14px",
+                background: "var(--color-background-secondary)",
+                border: "0.5px solid var(--color-border-secondary)",
+                borderRadius: "4px",
+                cursor: "pointer",
+                fontFamily: "monospace",
+                fontWeight: 500,
+              }}
+              title={op.description}
+            >
+              {op.symbol}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Test Values */}
+      <div style={{ marginBottom: "12px" }}>
+        <label style={{ ...labelStyle }}>قيم التجربة (اختياري)</label>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(150px, 1fr))", gap: "6px" }}>
+          {availableFields.map(field => (
+            <div key={field.key}>
+              <input
+                type="text"
+                value={testValues[field.key] || ''}
+                onChange={(e) => setTestValues({ ...testValues, [field.key]: e.target.value })}
+                placeholder={field.label}
+                style={{ ...inputStyle, fontSize: "11px" }}
+              />
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Action Buttons */}
+      <div style={{ display: "flex", gap: "8px", marginBottom: "12px" }}>
+        <button
+          onClick={validateFormula}
+          style={{ ...btnSecondary, flex: 1 }}
+        >
+          ✓ التحقق من الصيغة
+        </button>
+        <button
+          onClick={calculatePreview}
+          style={{ ...btnPrimary, flex: 1 }}
+        >
+          🔢 حساب النتيجة
+        </button>
+      </div>
+
+      {/* Preview Results */}
+      {preview && (
+        <div style={{
+          padding: "12px",
+          borderRadius: "6px",
+          backgroundColor: preview.valid ? "var(--color-background-success)" : "var(--color-background-danger)",
+          border: `0.5px solid ${preview.valid ? 'var(--color-border-success)' : 'var(--color-border-danger)'}`,
+        }}>
+          {preview.valid ? (
+            <>
+              <div style={{ fontWeight: 600, marginBottom: "8px", color: "var(--color-text-success)" }}>
+                ✅ الصيغة صالحة
+              </div>
+              {preview.steps && (
+                <div style={{ fontSize: "11px", fontFamily: "monospace", direction: "ltr", textAlign: "left", marginBottom: "8px" }}>
+                  {preview.steps.map((step, i) => (
+                    <div key={i} style={{ padding: "2px 0" }}>{step}</div>
+                  ))}
+                </div>
+              )}
+              {preview.result && (
+                <div style={{ fontSize: "18px", fontWeight: 700, fontFamily: "monospace", direction: "ltr", textAlign: "left" }}>
+                  = {preview.result}
+                </div>
+              )}
+            </>
+          ) : (
+            <div style={{ fontWeight: 600, color: "var(--color-text-danger)" }}>
+              ❌ {preview.error}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Syntax Help */}
+      <div style={{ marginTop: "12px", padding: "8px", fontSize: "10px", color: "var(--color-text-tertiary)", backgroundColor: "#fff", borderRadius: "4px" }}>
+        <div style={{ fontWeight: 600, marginBottom: "4px" }}>مثال:</div>
+        <div style={{ fontFamily: "monospace", direction: "ltr", textAlign: "left" }}>
+          {'{{records_count}} * 25000'}
+        </div>
+        <div style={{ marginTop: "4px" }}>
+          يضرب عدد السجلات × 25000
+        </div>
+      </div>
+    </div>
+  );
+}

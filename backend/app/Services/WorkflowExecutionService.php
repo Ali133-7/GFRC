@@ -21,7 +21,6 @@ use Illuminate\Support\Facades\DB;
  */
 class WorkflowExecutionService
 {
-    protected RuleEngineV2 $ruleEngine;
     protected EnterpriseRuleEngine $enterpriseEngine;
     protected FeeEngine $feeEngine;
     protected EventStore $eventStore;
@@ -36,7 +35,6 @@ class WorkflowExecutionService
     protected CrossFieldValidationEngine $crossFieldValidation;
 
     public function __construct(
-        RuleEngineV2 $ruleEngine,
         EnterpriseRuleEngine $enterpriseEngine,
         FeeEngine $feeEngine,
         EventStore $eventStore,
@@ -49,7 +47,6 @@ class WorkflowExecutionService
         FieldAuditTrail $auditTrail,
         CrossFieldValidationEngine $crossFieldValidation
     ) {
-        $this->ruleEngine = $ruleEngine;
         $this->enterpriseEngine = $enterpriseEngine;
         $this->feeEngine = $feeEngine;
         $this->eventStore = $eventStore;
@@ -64,7 +61,6 @@ class WorkflowExecutionService
         $this->crossFieldValidation = $crossFieldValidation;
 
         $this->feeEngine->setContext($this->ctx);
-        $this->ruleEngine->setContext($this->ctx);
     }
 
     /**
@@ -121,12 +117,20 @@ class WorkflowExecutionService
         }
 
         return DB::transaction(function () use ($execution, $stepIndex, $values) {
+            // === ARABIC DEBUG: Log received values ===
+            \Log::info('📥 استلام قيم من الـ Form', [
+                'execution_id' => $execution->id,
+                'step_index' => $stepIndex,
+                'received_values_count' => count($values),
+                'received_values' => $values,
+            ]);
+            // === END ARABIC DEBUG ===
+            
             $currentValues = $execution->values_snapshot ?? [];
 
             $version = $execution->version;
             $steps = $version->steps;
             $fields = $version->fields;
-            $rules = $version->rules;
 
             $stepFields = $fields->where('step_id', $steps[$stepIndex]->id ?? null);
 
@@ -283,7 +287,12 @@ class WorkflowExecutionService
                 }
             }
 
-            $modifiedValues = $this->applySetValueActions($mergedValues, $allActions);
+            // Build field states first so we can check lock state in applySetValueActions
+            $fieldStates = $this->buildFieldStates($fields, $allActions);
+            $fieldStates = $this->visibilityResolver->applyFieldControlActions($fieldStates, $allActions);
+            
+            // Apply set_value actions (respects locked fields)
+            $modifiedValues = $this->applySetValueActions($mergedValues, $allActions, $fieldStates);
 
             // Preserve generate_reference in snapshot for reuse
             foreach ($enterpriseResult['results'] ?? [] as $r) {
@@ -295,8 +304,6 @@ class WorkflowExecutionService
                     }
                 }
             }
-            $fieldStates = $this->buildFieldStates($fields, $allActions);
-            $fieldStates = $this->visibilityResolver->applyFieldControlActions($fieldStates, $allActions);
             $stepId = $steps[$stepIndex]->id ?? null;
             $schema = $this->schemaBuilder->buildForVersion($stepFields, $modifiedValues);
             $visibleSchema = $this->schemaBuilder->filterVisible($schema);
@@ -508,7 +515,7 @@ class WorkflowExecutionService
 
         $fieldStates = $this->buildFieldStates($fields, $allActions);
         $fieldStates = $this->visibilityResolver->applyFieldControlActions($fieldStates, $allActions);
-        $modifiedValues = $this->applySetValueActions($normalizedValues, $allActions);
+        $modifiedValues = $this->applySetValueActions($normalizedValues, $allActions, $fieldStates);
 
         $schema = $this->schemaBuilder->buildForVersion($fields, $modifiedValues);
         $visibleSchema = $this->schemaBuilder->filterVisible($schema);
@@ -875,6 +882,13 @@ class WorkflowExecutionService
     protected function sanitizeInput($stepFields, array $values, array $currentValues): array
     {
         $sanitized = [];
+        
+        // === ARABIC DEBUG: Log sanitization process ===
+        \Log::debug('🧹 تنظيف القيم المُرسَلة', [
+            'input_count' => count($values),
+            'step_fields_count' => $stepFields->count(),
+        ]);
+        // === END ARABIC DEBUG ===
 
         foreach ($values as $fieldId => $value) {
             $field = null;
@@ -893,6 +907,12 @@ class WorkflowExecutionService
             }
 
             if (!$field) {
+                // === ARABIC DEBUG: Field not found ===
+                \Log::warning('⚠️ حقل غير موجود في الخطوة الحالية', [
+                    'field_id' => $fieldId,
+                    'value' => $value,
+                ]);
+                // === END ARABIC DEBUG ===
                 continue;
             }
 
@@ -910,6 +930,14 @@ class WorkflowExecutionService
             }
 
             $sanitized[$resolvedFieldId] = $value;
+            
+            // === ARABIC DEBUG: Value sanitized ===
+            \Log::debug('✅ قيمة مُنظّفة', [
+                'field_id' => $resolvedFieldId,
+                'field_name' => $field->label ?? $field->name,
+                'value' => $value,
+            ]);
+            // === END ARABIC DEBUG ===
         }
 
         return $sanitized;
@@ -919,10 +947,21 @@ class WorkflowExecutionService
      * Normalize field keys so that every alias (UUID, register_field_id, custom_<id>)
      * maps to the same canonical value. This ensures rule engines can look up values
      * by whichever key format the condition/action was authored with.
+     * 
+     * CRITICAL: This must handle values from ANY step, not just the current step,
+     * because rules may reference fields from previous steps or other parts of the workflow.
      */
     protected function normalizeFieldKeys(array $values, $fields): array
     {
         $normalized = $values;
+        
+        // === ARABIC DEBUG: Log normalization start ===
+        \Log::debug('🔄 تطبيع مفاتيح الحقول', [
+            'input_count' => count($values),
+            'input_keys' => array_keys($values),
+            'fields_count' => $fields->count(),
+        ]);
+        // === END ARABIC DEBUG ===
 
         foreach ($fields as $field) {
             $canonical = $field->register_field_id ?? 'custom_'.$field->id;
@@ -953,8 +992,46 @@ class WorkflowExecutionService
                 foreach ($aliases as $alias) {
                     $normalized[$alias] = $bestValue;
                 }
+                
+                // === ARABIC DEBUG: Value normalized ===
+                \Log::debug('✅ قيمة مُطبّعة', [
+                    'field_name' => $field->label ?? $field->name,
+                    'canonical' => $canonical,
+                    'value' => $bestValue,
+                    'aliases_count' => count($aliases),
+                ]);
+                // === END ARABIC DEBUG ===
+            } else {
+                // CRITICAL FIX: If value not found in current step's values,
+                // check if it exists in $normalized from previous steps
+                // This ensures rules can reference fields from ANY step
+                foreach ($aliases as $alias) {
+                    if (array_key_exists($alias, $normalized)) {
+                        $bestValue = $normalized[$alias];
+                        $normalized[$canonical] = $bestValue;
+                        foreach ($aliases as $otherAlias) {
+                            $normalized[$otherAlias] = $bestValue;
+                        }
+                        
+                        // === ARABIC DEBUG: Value found in normalized ===
+                        \Log::debug('✅ قيمة موجودة في القيم المُطبّعة', [
+                            'field_name' => $field->label ?? $field->name,
+                            'canonical' => $canonical,
+                            'value' => $bestValue,
+                        ]);
+                        // === END ARABIC DEBUG ===
+                        break;
+                    }
+                }
             }
         }
+        
+        // === ARABIC DEBUG: Log normalization result ===
+        \Log::debug('📊 نتيجة التطبيع', [
+            'output_count' => count($normalized),
+            'output_keys' => array_keys($normalized),
+        ]);
+        // === END ARABIC DEBUG ===
 
         return $normalized;
     }
@@ -1063,12 +1140,24 @@ class WorkflowExecutionService
         return $states;
     }
 
-    protected function applySetValueActions(array $values, array $actions): array
+    protected function applySetValueActions(array $values, array $actions, array $fieldStates = []): array
     {
         $modified = $values;
         foreach ($actions as $action) {
             $act = $action['action'] ?? '';
             $targetId = $action['target_field_id'] ?? null;
+
+            if (!$targetId) continue;
+
+            // SECURITY: Do not modify locked fields via rule actions
+            // This prevents rules from bypassing lock state
+            if (isset($fieldStates[$targetId]) && $fieldStates[$targetId]['is_locked'] === true) {
+                \Log::debug('applySetValueActions: skipped locked field', [
+                    'field_id' => $targetId,
+                    'action' => $act,
+                ]);
+                continue;
+            }
 
             if ($act === 'set_value' && $targetId) {
                 $modified[$targetId] = $action['resolved_value'] ?? $action['value'] ?? '';
@@ -1086,6 +1175,9 @@ class WorkflowExecutionService
                 $modified[$targetId] = $action['resolved_value'] ?? $action['value'] ?? '';
             } elseif ($act === 'generate_reference' && $targetId) {
                 $modified[$targetId] = $action['resolved_value'] ?? '';
+            } elseif ($act === 'multiply_and_add' && $targetId) {
+                // multiply_and_add sets the target field value
+                $modified[$targetId] = $action['new_target_value'] ?? $action['resolved_amount'] ?? '0';
             }
         }
         return $modified;
@@ -1186,18 +1278,38 @@ class WorkflowExecutionService
 
             $amount = '0';
             $actionType = null;
+            $calculateAmount = null;  // ✅ تتبع calculate actions بشكل منفصل
+            
             foreach ($otherActions as $action) {
                 $act = $action['action'] ?? '';
                 if ($act === 'calculate') {
-                    $amount = (string) ($action['resolved_amount'] ?? '0');
+                    $calculateAmount = (string) ($action['resolved_amount'] ?? $action['result'] ?? '0');
                     $actionType = 'calculate';
+                    \Log::debug('💰 calculate action found', [
+                        'field_id' => $fieldId,
+                        'formula' => $action['formula'] ?? 'unknown',
+                        'amount' => $calculateAmount,
+                    ]);
                 } elseif ($act === 'set_value') {
                     $textValue = $action['resolved_value'] ?? $textValue;
-                    $actionType = 'set_value';
-                    if ($field->is_financial && is_numeric($textValue) && $textValue !== '') {
-                        $amount = $this->normalizeDecimal((string) $textValue);
+                    // ✅ set_value لا يتجاوز calculate!
+                    if ($actionType !== 'calculate') {
+                        $actionType = 'set_value';
+                        if ($field->is_financial && is_numeric($textValue) && $textValue !== '') {
+                            $amount = $this->normalizeDecimal((string) $textValue);
+                        }
                     }
                 }
+            }
+
+            // ✅ calculate له أولوية على set_value
+            if ($calculateAmount !== null && bccomp($calculateAmount, '0', $this->ctx->scale()) > 0) {
+                $amount = $calculateAmount;
+                \Log::info('✅ calculate action result applied', [
+                    'field_id' => $fieldId,
+                    'field_name' => $field->label ?? $field->name,
+                    'amount' => $amount,
+                ]);
             }
 
             if ($amount === '0' && $actionType === null) {
@@ -1479,7 +1591,7 @@ class WorkflowExecutionService
 
         for ($i = $startIndex; $i < $steps->count(); $i++) {
             $step = $steps[$i];
-            if ($this->ruleEngine->isStepVisible($step->condition_logic ?? [], $values)) {
+            if ($this->enterpriseEngine->isStepVisible($step->condition_logic ?? [], $values)) {
                 return $i;
             }
         }

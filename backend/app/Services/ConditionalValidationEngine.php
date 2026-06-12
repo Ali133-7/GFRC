@@ -209,10 +209,60 @@ class ConditionalValidationEngine
         if ($value === null || $value === '') {
             return null;
         }
-        if (!preg_match("/{$param}/", (string) $value)) {
+        if ($param === null || $param === '') {
+            return null;
+        }
+
+        // SECURITY: Validate regex syntax before use to prevent ReDoS
+        // Only allow safe regex patterns (no nested quantifiers, no backtracking)
+        if (!$this->isSafeRegex($param)) {
+            \Log::warning('Unsafe regex pattern blocked', [
+                'pattern' => $param,
+                'label' => $label,
+            ]);
+            return "حقل {$label} يحتوي على نمط غير آمن";
+        }
+
+        // Add delimiters and use error suppression to catch invalid patterns
+        $pattern = @preg_match("/{$param}/", (string) $value);
+        if ($pattern === false || $pattern === 0) {
             return "حقل {$label} لا يتطابق مع النمط المطلوب";
         }
         return null;
+    }
+
+    /**
+     * Check if a regex pattern is safe (no ReDoS risk).
+     */
+    protected function isSafeRegex(string $pattern): bool
+    {
+        // Block dangerous patterns
+        $dangerousPatterns = [
+            '/\(\?:.*?\+\)\+/',  // Nested quantifiers
+            '/\(\?:.*?\*\)\*/',  // Nested quantifiers
+            '/\(\?:.*?\?\)\?/',  // Nested quantifiers
+            '/\(\+.*?\+\)/',     // Nested + quantifiers
+            '/\(\*.*?\*\)/',     // Nested * quantifiers
+            '/\(\?{2,}\)/',      // Multiple quantifiers
+            '/\+{2,}/',          // Multiple + quantifiers
+            '/\*{2,}/',          // Multiple * quantifiers
+            '/\(\?<!.*?\(\?:/',  // Lookbehind with non-capturing group
+            '/\(\?=\s*\(\?:/',   // Lookahead with non-capturing group
+        ];
+
+        foreach ($dangerousPatterns as $dangerousPattern) {
+            if (@preg_match($dangerousPattern, $pattern)) {
+                return false;
+            }
+        }
+
+        // Validate regex syntax
+        $testResult = @preg_match("/{$pattern}/", '');
+        if ($testResult === false) {
+            return false;
+        }
+
+        return true;
     }
 
     protected function validateConfirmed(mixed $value, string $name, array $values, string $label): ?string

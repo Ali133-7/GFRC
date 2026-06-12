@@ -25,13 +25,30 @@ return Application::configure(basePath: dirname(__DIR__))
         $middleware->api(append: [
             SecurityHeaders::class,
         ]);
+        
+        $middleware->redirectGuestsTo(function ($request) {
+            if ($request->is('api/*')) {
+                return null; // Don't redirect API requests
+            }
+            return route('login');
+        });
     })
     ->withExceptions(function (Exceptions $exceptions): void {
+        $exceptions->render(function (\Illuminate\Auth\AuthenticationException $e, Request $request) {
+            if ($request->is('api/*')) {
+                return response()->json([
+                    'success' => false,
+                    'message' => 'Unauthorized - Please login',
+                    'error_code' => 'UNAUTHORIZED',
+                ], 401);
+            }
+        });
+
         $exceptions->render(function (TooManyRequestsHttpException $e, Request $request) {
             if ($request->is('api/*')) {
                 return response()->json([
                     'success' => false,
-                    'message' => 'تم تجاوز الحد المسموح من الطلبات. يرجى الانتظار.',
+                    'message' => '?? ???? ???? ??????? ?? ??????. ???? ????????.',
                     'error_code' => 'RATE_LIMIT_EXCEEDED',
                 ], 429);
             }

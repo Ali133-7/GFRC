@@ -154,10 +154,13 @@ class VisibilityResolver
 
                 case 'enable':
                     $fieldStates[$targetId]['is_visible'] = true;
+                    $fieldStates[$targetId]['is_editable'] = true;
                     break;
 
                 case 'disable':
-                    $fieldStates[$targetId]['is_visible'] = false;
+                    // Disable should make field not editable, not hidden
+                    $fieldStates[$targetId]['is_editable'] = false;
+                    $fieldStates[$targetId]['is_readonly'] = true;
                     break;
 
                 case 'set_lock':

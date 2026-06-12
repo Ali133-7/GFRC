@@ -57,6 +57,7 @@ export default function ValidationRuleBuilder({
 }: ValidationRuleBuilderProps) {
   const [name, setName] = useState(rule?.name ?? "");
   const [description, setDescription] = useState(rule?.description ?? "");
+  const [realtimeEnabled, setRealtimeEnabled] = useState(rule?.realtime_enabled ?? true);
   const [validationType, setValidationType] = useState(rule?.validation_type ?? "duplicate_check");
   const [targetRegisterId, setTargetRegisterId] = useState(rule?.target_register_id ?? "");
   const [targetFields, setTargetFields] = useState<Array<{ workflow_field_id: string; register_field_name: string }>>(
@@ -165,6 +166,7 @@ export default function ValidationRuleBuilder({
         confirm_message_ar: confirmMessageAr.trim() || null,
         sort_order: rule?.sort_order ?? 0,
         is_active: true,
+        realtime_enabled: realtimeEnabled,
       };
 
       if (["duplicate_check", "exists", "multi_field", "register_search"].includes(validationType)) {
@@ -255,7 +257,22 @@ export default function ValidationRuleBuilder({
         </div>
       )}
 
-      {/* Simulation panel */}
+      {/* Real-time execution checkbox */}
+      <div style={{ padding: "10px 18px", background: "var(--color-background-secondary)", borderBottom: "0.5px solid var(--color-border-tertiary)" }}>
+        <label style={{ display: "flex", alignItems: "center", gap: "8px", cursor: "pointer" }}>
+          <input
+            type="checkbox"
+            checked={realtimeEnabled}
+            onChange={(e) => setRealtimeEnabled(e.target.checked)}
+            style={{ width: "18px", height: "18px" }}
+          />
+          <span style={{ fontSize: "13px", fontWeight: 500, color: "var(--color-text-primary)" }}>
+            ☑ تنفيذ فوري (Real-time execution)
+          </span>
+        </label>
+      </div>
+
+      {/* Simulation */}
       {simMode && (
         <div style={{ padding: "12px 18px", background: "var(--color-background-success)", borderBottom: "0.5px solid var(--color-border-success)" }}>
           <div style={{ fontSize: "13px", fontWeight: 500, color: "var(--color-text-success)", marginBottom: "8px" }}>

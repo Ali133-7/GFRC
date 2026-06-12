@@ -7,7 +7,12 @@ use Symfony\Component\ExpressionLanguage\ExpressionLanguage;
 use Symfony\Component\ExpressionLanguage\SyntaxError;
 
 /**
+ * @deprecated Use FeeEngine::calculate() instead for BC Math precision.
+ * 
  * Safe formula evaluator using Symfony ExpressionLanguage.
+ *
+ * WARNING: This class uses float arithmetic internally and is NOT suitable
+ * for financial calculations. Use FeeEngine::calculate() for BC Math precision.
  *
  * Whitelist: min, max, round, abs only.
  * No eval(). No system calls. No PHP functions outside whitelist.
@@ -31,9 +36,17 @@ class FormulaEvaluator
      * @param int $scale Decimal scale for financial precision
      * @return string Evaluated result as string (for bc-math compatibility)
      * @throws RuleEvaluationException
+     * 
+     * @deprecated Use FeeEngine::calculate() for financial calculations.
+     *             This method uses float arithmetic and may produce imprecise results.
      */
     public function evaluate(string $formula, array $context, int $scale = 3): string
     {
+        // Log deprecation warning
+        \Log::warning('FormulaEvaluator::evaluate() is deprecated. Use FeeEngine::calculate() for BC Math precision.', [
+            'formula' => $formula,
+        ]);
+
         $this->validateFormula($formula);
 
         $safeContext = [];

@@ -6,6 +6,7 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Str;
 
 class WorkflowVersion extends Model
@@ -89,11 +90,19 @@ class WorkflowVersion extends Model
 
     public function publish(): void
     {
-        $this->update([
-            'status' => 'active',
-            'published_at' => now(),
-        ]);
-        $this->workflow->update(['current_version' => $this->version]);
+        DB::transaction(function () {
+            // Archive any existing active versions for this workflow
+            $this->workflow->versions()
+                ->where('id', '!=', $this->id)
+                ->where('status', 'active')
+                ->update(['status' => 'archived', 'archived_at' => now()]);
+
+            // Activate this version
+            $this->update([
+                'status' => 'active',
+                'published_at' => now(),
+            ]);
+        });
     }
 
     public function archive(): void

@@ -3,6 +3,7 @@
 use App\Http\Controllers\Api\V1\AuditLogController;
 use App\Http\Controllers\Api\V1\AuthController;
 use App\Http\Controllers\Api\V1\BackupController;
+use App\Http\Controllers\Api\V1\DashboardController;
 use App\Http\Controllers\Api\V1\ElementController;
 use App\Http\Controllers\Api\V1\FeeVersionController;
 use App\Http\Controllers\Api\V1\HealthController;
@@ -15,6 +16,7 @@ use App\Http\Controllers\Api\V1\SettingController;
 use App\Http\Controllers\Api\V1\StyleController;
 use App\Http\Controllers\Api\V1\TemplateController;
 use App\Http\Controllers\Api\V1\UserController;
+use App\Http\Controllers\Api\V1\WidgetController;
 use App\Http\Controllers\Api\V1\WorkflowController;
 use App\Http\Controllers\Api\V1\WorkflowExecutionController;
 use App\Http\Controllers\Api\V1\WorkflowVersionController;
@@ -88,12 +90,24 @@ Route::prefix('v1')->middleware('throttle:api')->group(function () {
         Route::get('receipts/{id}/qr', [ReceiptController::class, 'qr']);
         Route::get('receipts/{id}/revisions', [ReceiptController::class, 'revisions']);
 
-        Route::get('reports/daily', [ReportController::class, 'daily']);
-        Route::get('reports/monthly', [ReportController::class, 'monthly']);
-        Route::get('reports/user-activity', [ReportController::class, 'userActivity']);
-        Route::get('reports/register-summary', [ReportController::class, 'registerSummary']);
-        Route::post('reports/custom', [ReportController::class, 'custom']);
-        Route::get('reports/export-csv', [ReportController::class, 'exportCsv']);
+        // Dynamic Report Engine Routes (must come BEFORE legacy routes)
+        Route::apiResource('reports', \App\Http\Controllers\Api\V1\ReportController::class);
+        Route::post('reports/{id}/execute', [\App\Http\Controllers\Api\V1\ReportController::class, 'execute']);
+        Route::get('reports/{id}/chart/{chartId}', [\App\Http\Controllers\Api\V1\ReportController::class, 'chart']);
+        Route::post('reports/{id}/export', [\App\Http\Controllers\Api\V1\ReportController::class, 'export']);
+        Route::get('reports/{id}/executions', [\App\Http\Controllers\Api\V1\ReportController::class, 'executions']);
+        Route::post('reports/{id}/publish', [\App\Http\Controllers\Api\V1\ReportController::class, 'publish']);
+        Route::post('reports/{id}/clone', [\App\Http\Controllers\Api\V1\ReportController::class, 'clone']);
+        Route::get('reports/fields/available', [\App\Http\Controllers\Api\V1\ReportController::class, 'availableFields']);
+        Route::get('reports/download/{filename}', [\App\Http\Controllers\Api\V1\ReportController::class, 'download'])->where('filename', '.*');
+        
+        // Legacy Report Routes (for backward compatibility - will be removed)
+        Route::get('reports/daily', [\App\Http\Controllers\Api\V1\ReportController::class, 'daily']);
+        Route::get('reports/monthly', [\App\Http\Controllers\Api\V1\ReportController::class, 'monthly']);
+        Route::get('reports/user-activity', [\App\Http\Controllers\Api\V1\ReportController::class, 'userActivity']);
+        Route::get('reports/register-summary', [\App\Http\Controllers\Api\V1\ReportController::class, 'registerSummary']);
+        Route::post('reports/custom', [\App\Http\Controllers\Api\V1\ReportController::class, 'custom']);
+        Route::get('reports/export-csv', [\App\Http\Controllers\Api\V1\ReportController::class, 'exportCsv']);
 
         Route::get('settings', [SettingController::class, 'index']);
         Route::get('settings/public', [SettingController::class, 'publicSettings']);
@@ -196,7 +210,21 @@ Route::prefix('v1')->middleware('throttle:api')->group(function () {
         Route::post('workflow-executions/{id}/resume', [WorkflowExecutionController::class, 'resumeExecution']);
         Route::post('workflow-executions/{id}/redirect', [WorkflowExecutionController::class, 'redirectExecution']);
         Route::post('workflow-executions/{id}/save-draft', [WorkflowExecutionController::class, 'saveDraft']);
+        
+        // Real-Time Rule Execution
+        Route::post('workflow-executions/{id}/execute-realtime', [WorkflowExecutionController::class, 'executeRealTime']);
+        Route::get('workflow-executions/{id}/execution-status', [WorkflowExecutionController::class, 'getExecutionStatus']);
+        
         Route::get('workflow-versions/{versionId}/field-schema', [WorkflowExecutionController::class, 'getFieldSchema']);
+
+        // Workflow Version Rule Management
+        Route::get('workflow-versions/{versionId}/rules', [WorkflowVersionController::class, 'getRules']);
+        Route::get('workflow-versions/{versionId}/rules/{ruleId}', [WorkflowVersionController::class, 'getRule']);
+        Route::post('workflow-versions/{versionId}/rules', [WorkflowVersionController::class, 'createRule']);
+        Route::put('workflow-versions/{versionId}/rules/{ruleId}', [WorkflowVersionController::class, 'updateRule']);
+        Route::delete('workflow-versions/{versionId}/rules/{ruleId}', [WorkflowVersionController::class, 'deleteRule']);
+        Route::get('workflow-versions/{versionId}/validation-rules', [WorkflowVersionController::class, 'getValidationRules']);
+        Route::post('workflow-versions/{versionId}/validation-rules', [WorkflowVersionController::class, 'createValidationRule']);
 
         // Fee Versions
         Route::get('official-fees/{id}/versions', [FeeVersionController::class, 'index']);
@@ -218,6 +246,41 @@ Route::prefix('v1')->middleware('throttle:api')->group(function () {
         Route::delete('help/{id}', [HelpCenterController::class, 'destroy']);
         Route::patch('help/reorder', [HelpCenterController::class, 'reorder']);
         Route::post('help/seed', [HelpCenterController::class, 'seedSystemArticles']);
+
+        // Dashboards & Widgets
+        Route::get('dashboards', [DashboardController::class, 'index']);
+        Route::get('dashboards/available', [DashboardController::class, 'availableDashboards']);
+        Route::post('dashboards/set-default', [DashboardController::class, 'setDefault']);
+        Route::get('dashboards/preferences', [DashboardController::class, 'preferences']);
+        Route::put('dashboards/preferences', [DashboardController::class, 'updatePreferences']);
+        Route::get('dashboards/fund-statistics', [DashboardController::class, 'fundStatistics']);
+        Route::post('dashboards/import', [DashboardController::class, 'import']);
+        Route::get('dashboards/{id}', [DashboardController::class, 'show']);
+        Route::post('dashboards', [DashboardController::class, 'store']);
+        Route::put('dashboards/{id}', [DashboardController::class, 'update']);
+        Route::delete('dashboards/{id}', [DashboardController::class, 'destroy']);
+        Route::post('dashboards/{id}/clone', [DashboardController::class, 'clone']);
+        Route::get('dashboards/{id}/export', [DashboardController::class, 'export']);
+        Route::get('dashboards/{id}/versions', [DashboardController::class, 'versions']);
+        Route::post('dashboards/{id}/sections', [WidgetController::class, 'addSection']);
+        Route::post('dashboards/{id}/sections/{sectionId}/widgets', [WidgetController::class, 'store']);
+        Route::post('dashboards/{id}/widgets/batch', [DashboardController::class, 'batchWidgetData']);
+        Route::put('dashboards/{id}/widgets/positions', [WidgetController::class, 'updatePositions']);
+        Route::get('dashboards/{id}/widgets/{widgetId}/data', [DashboardController::class, 'widgetData']);
+        Route::post('dashboards/{id}/widgets/batch', [DashboardController::class, 'batchWidgetData']);
+        
+        // Admin Dashboard Management
+        Route::get('admin/dashboards', [DashboardController::class, 'adminList']);
+        Route::post('admin/dashboards/{id}/assign', [DashboardController::class, 'assignToUser']);
+
+        // Widget Management
+        Route::post('dashboards/{id}/sections', [WidgetController::class, 'addSection']);
+        Route::put('sections/{id}', [WidgetController::class, 'updateSection']);
+        Route::delete('sections/{id}', [WidgetController::class, 'removeSection']);
+        Route::post('dashboards/{id}/sections/{sectionId}/widgets', [WidgetController::class, 'store']);
+        Route::put('widgets/{id}', [WidgetController::class, 'update']);
+        Route::put('dashboards/{id}/widgets/positions', [WidgetController::class, 'updatePositions']);
+        Route::delete('widgets/{id}', [WidgetController::class, 'destroy']);
     });
 
     Route::get('health', [HealthController::class, 'index']);

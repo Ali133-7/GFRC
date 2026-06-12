@@ -9,28 +9,41 @@ import {
   usePreviewExecution,
   useCompleteExecution,
 } from "@/hooks/useWorkflows";
+import { RealTimeRuleExecutor } from "@/components/execution/RealTimeRuleExecutor";
+import { ExecutionStatusIndicator, NextButton } from "@/components/execution/ExecutionStatusIndicator";
 import { PageHeader } from "@/components/layout/PageHeader";
 import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
 import { GovSelect, GovSelectMulti } from "@/components/ui/GovSelect";
 import BranchHandler from "@/components/execution/BranchHandler";
 import type { WorkflowField, WorkflowStep } from "@/types/workflow";
 
-function renderConditionTrace(trace: any, depth = 0): string {
+// Helper to resolve field name from version fields
+const resolveFieldName = (fieldId: string, fields?: WorkflowField[]): string => {
+  if (!fields || !fieldId) return fieldId;
+  const field = fields.find((f) => 
+    (f.register_field_id ?? `custom_${f.id}`) === fieldId || f.id === fieldId
+  );
+  return field?.label ?? fieldId;
+};
+
+function renderConditionTrace(trace: any, depth = 0, fields?: WorkflowField[]): string {
   if (!trace) return "";
   if (Array.isArray(trace)) {
-    return trace.map((t) => renderConditionTrace(t, depth)).join(" AND ");
+    return trace.map((t) => renderConditionTrace(t, depth, fields)).join(" AND ");
   }
   if (trace.type === "group") {
     const sep = trace.logic === "or" ? " OR " : " AND ";
-    return `(${trace.conditions.map((c: any) => renderConditionTrace(c, depth + 1)).join(sep)})`;
+    return `(${trace.conditions.map((c: any) => renderConditionTrace(c, depth + 1, fields)).join(sep)})`;
   }
   if (trace.type === "condition") {
+    const fieldName = resolveFieldName(trace.field_id, fields);
     const actual = trace.actual === null ? "null" : trace.actual === undefined ? "undefined" : String(trace.actual);
     const expected = trace.expected === null ? "null" : trace.expected === undefined ? "undefined" : String(trace.expected);
-    return `${trace.field_id.slice(0, 8)}… ${trace.operator} "${expected}" [actual="${actual}"]`;
+    return `${fieldName} ${trace.operator} "${expected}" [actual="${actual}"]`;
   }
   if (trace.trigger_field) {
-    return `trigger=${trace.trigger_field.slice(0, 8)}… value="${trace.trigger_value}" matched=${trace.matched_case ?? "none"}`;
+    const triggerName = resolveFieldName(trace.trigger_field, fields);
+    return `trigger=${triggerName} value="${trace.trigger_value}" matched=${trace.matched_case ?? "none"}`;
   }
   return JSON.stringify(trace);
 }
@@ -139,21 +152,40 @@ export default function WorkflowExecutionPage() {
     return [];
   };
 
-  const handleFieldChange = (fieldId: string, value: string) => {
-    setValues((prev) => ({ ...prev, [fieldId]: value }));
-  };
-
-  const handleNext = useCallback(() => {
-    if (!executionId || !currentStep) return;
-
-    const stepValues: Record<string, string> = {};
-    stepFields.forEach((f: WorkflowField) => {
-      const fid = resolveFieldId(f);
-      stepValues[fid] = values[fid] ?? f.default_value ?? "";
+  const handleFieldChange = useCallback((fieldId: string, value: string) => {
+    setValues((prev) => {
+      const newValues = { ...prev, [fieldId]: value };
+      
+      // Trigger real-time rule execution
+      if (executionId) {
+        // Real-time execution will be triggered by RealTimeRuleExecutor
+        // This is just for immediate UI updates
+      }
+      
+      return newValues;
     });
+  }, [executionId]);
 
-    submitMut.mutate(
-      { id: executionId, step_index: stepIndex, values: stepValues },
+    const handleNext = useCallback(() => {
+      if (!executionId || !currentStep) return;
+  
+      const stepValues: Record<string, string> = {};
+      stepFields.forEach((f: WorkflowField) => {
+        const fid = resolveFieldId(f);
+        stepValues[fid] = values[fid] ?? f.default_value ?? "";
+      });
+  
+      // === DEBUG: Log values being sent ===
+      console.log('📤 Sending values to backend:', {
+        step_index: stepIndex,
+        field_count: stepFields.length,
+        values: stepValues,
+        all_values: values,
+      });
+      // === END DEBUG ===
+  
+      submitMut.mutate(
+        { id: executionId, step_index: stepIndex, values: stepValues },
       {
         onSuccess: (data: any) => {
           setStepIndex(data.current_step_index);
@@ -701,7 +733,7 @@ export default function WorkflowExecutionPage() {
                   </div>
                   {rule.condition_trace && !rule.matched && (
                     <div style={{ marginLeft: "8px", color: "#808080", marginTop: "2px" }}>
-                      Conditions: {renderConditionTrace(rule.condition_trace)}
+                      Conditions: {renderConditionTrace(rule.condition_trace, 0, activeVersion?.fields)}
                     </div>
                   )}
                   {rule.executed_actions && rule.executed_actions.length > 0 && (
@@ -711,7 +743,10 @@ export default function WorkflowExecutionPage() {
                   )}
                   {rule.field_effects && rule.field_effects.length > 0 && (
                     <div style={{ marginLeft: "8px", color: "#ce9178" }}>
-                      Effects: {rule.field_effects.map((e: any) => `${e.action}(${e.field_id}${e.value ? `=${e.value}` : ""}${e.fee_code ? ` fee=${e.fee_code}` : ""}${e.amount ? ` amt=${e.amount}` : ""})`).join(", ")}
+                      Effects: {rule.field_effects.map((e: any) => {
+                        const fieldName = resolveFieldName(e.field_id, activeVersion?.fields);
+                        return `${e.action}(${fieldName}${e.value ? `=${e.value}` : ""}${e.fee_code ? ` fee=${e.fee_code}` : ""}${e.amount ? ` amt=${e.amount}` : ""})`;
+                      }).join(", ")}
                     </div>
                   )}
                   {rule.messages && rule.messages.length > 0 && (
@@ -739,21 +774,27 @@ export default function WorkflowExecutionPage() {
           {debugTrace.field_states && Object.keys(debugTrace.field_states).length > 0 && (
             <div style={{ marginBottom: "4px" }}>
               <span style={{ color: "#9cdcfe" }}>Field States:</span>
-              {Object.entries(debugTrace.field_states).map(([fid, state]: [string, any]) => (
-                <div key={fid} style={{ marginLeft: "12px", color: "#dcdcaa" }}>
-                  {fid}: visible={state.is_visible ? "Y" : "N"}, required={state.is_required ? "Y" : "N"}, readonly={state.is_readonly ? "Y" : "N"}
-                </div>
-              ))}
+              {Object.entries(debugTrace.field_states).map(([fid, state]: [string, any]) => {
+                const fieldName = resolveFieldName(fid, activeVersion?.fields);
+                return (
+                  <div key={fid} style={{ marginLeft: "12px", color: "#dcdcaa" }}>
+                    {fieldName} ({fid}): visible={state.is_visible ? "Y" : "N"}, required={state.is_required ? "Y" : "N"}, readonly={state.is_readonly ? "Y" : "N"}
+                  </div>
+                );
+              })}
             </div>
           )}
           {debugTrace.modified_values && Object.keys(debugTrace.modified_values).length > 0 && (
             <div style={{ marginBottom: "4px" }}>
               <span style={{ color: "#9cdcfe" }}>Modified Values:</span>
-              {Object.entries(debugTrace.modified_values).map(([fid, val]: [string, any]) => (
-                <div key={fid} style={{ marginLeft: "12px", color: "#ce9178" }}>
-                  {fid} = {val}
-                </div>
-              ))}
+              {Object.entries(debugTrace.modified_values).map(([fid, val]: [string, any]) => {
+                const fieldName = resolveFieldName(fid, activeVersion?.fields);
+                return (
+                  <div key={fid} style={{ marginLeft: "12px", color: "#ce9178" }}>
+                    {fieldName} = {val}
+                  </div>
+                );
+              })}
             </div>
           )}
           {debugTrace.routing_decisions && debugTrace.routing_decisions.length > 0 && (
@@ -961,58 +1002,70 @@ export default function WorkflowExecutionPage() {
         </div>
       ) : (
         <div>
-          {/* Step form */}
-          <div
-            style={{
-              background: "var(--color-background-primary)",
-              border: "0.5px solid var(--color-border-tertiary)",
-              borderRadius: "var(--border-radius-lg)",
-              padding: "16px",
-              marginBottom: "16px",
+          {/* Step form with Real-Time Rule Execution */}
+          <RealTimeRuleExecutor
+            executionId={executionId ?? ''}
+            values={values}
+            onValuesUpdate={(updatedValues) => {
+              setValues(updatedValues);
+            }}
+            onFinancialUpdate={(financials) => {
+              // Show financial updates (optional toast/notification)
+              console.log('Financial update from real-time execution:', financials);
             }}
           >
-            <div style={{ fontSize: "14px", fontWeight: 500, marginBottom: "12px" }}>{currentStep?.title_ar}</div>
-            <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
-              {stepFields
-                .filter((field: WorkflowField) => getFieldState(field).isVisible)
-                .map((field: WorkflowField) => {
-                  const state = getFieldState(field);
-                  return (
-                    <div key={field.id}>
-                      <label style={{ fontSize: "13px", fontWeight: 500, color: "var(--color-text-primary)", display: "flex", alignItems: "center", gap: "4px", marginBottom: "6px" }}>
-                        {field.label}
-                        {state.isRequired && (
-                          <span
-                            style={{
-                              color: "#dc2626",
-                              fontSize: "14px",
-                              fontWeight: 700,
-                              lineHeight: 1,
-                              marginLeft: "2px",
-                            }}
-                            title="حقل إلزامي"
-                          >
-                            *
-                          </span>
-                        )}
-                        {field.is_financial && (
-                          <span style={{ fontSize: "10px", padding: "1px 6px", background: "var(--color-background-success)", color: "var(--color-text-success)", borderRadius: "4px", fontWeight: 500 }}>مالي</span>
-                        )}
-                        {state.isReadonly && (
-                          <span style={{ fontSize: "10px", padding: "1px 6px", background: "var(--color-background-warning)", color: "var(--color-text-warning)", borderRadius: "4px", fontWeight: 500 }}>للقراءة فقط</span>
-                        )}
-                        {field.register_field_id === null && (
-                          <span style={{ fontSize: "9px", padding: "1px 5px", background: "var(--color-background-info)", color: "var(--color-text-info)", borderRadius: "4px", fontWeight: 500 }}>مخصص</span>
-                        )}
-                      </label>
-                      {fieldInput(field)}
-                    </div>
-                  );
-                })}
+            <div
+              style={{
+                background: "var(--color-background-primary)",
+                border: "0.5px solid var(--color-border-tertiary)",
+                borderRadius: "var(--border-radius-lg)",
+                padding: "16px",
+                marginBottom: "16px",
+              }}
+            >
+              <div style={{ fontSize: "14px", fontWeight: 500, marginBottom: "12px" }}>{currentStep?.title_ar}</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: "14px" }}>
+                {stepFields
+                  .filter((field: WorkflowField) => getFieldState(field).isVisible)
+                  .map((field: WorkflowField) => {
+                    const state = getFieldState(field);
+                    return (
+                      <div key={field.id}>
+                        <label style={{ fontSize: "13px", fontWeight: 500, color: "var(--color-text-primary)", display: "flex", alignItems: "center", gap: "4px", marginBottom: "6px" }}>
+                          {field.label}
+                          {state.isRequired && (
+                            <span
+                              style={{
+                                color: "#dc2626",
+                                fontSize: "14px",
+                                fontWeight: 700,
+                                lineHeight: 1,
+                                marginLeft: "2px",
+                              }}
+                              title="حقل إلزامي"
+                            >
+                              *
+                            </span>
+                          )}
+                          {field.is_financial && (
+                            <span style={{ fontSize: "10px", padding: "1px 6px", background: "var(--color-background-success)", color: "var(--color-text-success)", borderRadius: "4px", fontWeight: 500 }}>مالي</span>
+                          )}
+                          {state.isReadonly && (
+                            <span style={{ fontSize: "10px", padding: "1px 6px", background: "var(--color-background-warning)", color: "var(--color-text-warning)", borderRadius: "4px", fontWeight: 500 }}>للقراءة فقط</span>
+                          )}
+                          {field.register_field_id === null && (
+                            <span style={{ fontSize: "9px", padding: "1px 5px", background: "var(--color-background-info)", color: "var(--color-text-info)", borderRadius: "4px", fontWeight: 500 }}>مخصص</span>
+                          )}
+                        </label>
+                        {fieldInput(field)}
+                      </div>
+                    );
+                  })}
+              </div>
             </div>
-          </div>
+          </RealTimeRuleExecutor>
 
-          <div style={{ display: "flex", gap: "10px", justifyContent: "space-between" }}>
+          <div style={{ display: "flex", gap: "10px", justifyContent: "space-between", alignItems: "center" }}>
             <button
               onClick={() => setStepIndex((i) => Math.max(0, i - 1))}
               disabled={stepIndex === 0}
@@ -1029,23 +1082,42 @@ export default function WorkflowExecutionPage() {
             >
               ← السابق
             </button>
-            <button
-              onClick={handleNext}
-              disabled={submitMut.isPending}
-              style={{
-                padding: "8px 24px",
-                fontSize: "13px",
-                fontWeight: 500,
-                background: "var(--color-background-info)",
-                color: "var(--color-text-info)",
-                border: "0.5px solid var(--color-border-info)",
-                borderRadius: "var(--border-radius-md)",
-                cursor: "pointer",
-                fontFamily: "inherit",
-              }}
-            >
-              {submitMut.isPending ? "جارٍ..." : stepIndex === steps.length - 1 ? "المراجعة →" : "التالي →"}
-            </button>
+            
+            <div style={{ display: "flex", gap: "12px", alignItems: "center" }}>
+              {/* Execution Status Indicator */}
+              {executionId && (
+                <ExecutionStatusIndicator executionId={executionId} showDetails={false} />
+              )}
+              
+              {/* Next Button with execution status integration */}
+              {executionId ? (
+                <NextButton
+                  executionId={executionId}
+                  onClick={handleNext}
+                  disabled={submitMut.isPending}
+                >
+                  {submitMut.isPending ? "جارٍ..." : stepIndex === steps.length - 1 ? "المراجعة →" : "التالي →"}
+                </NextButton>
+              ) : (
+                <button
+                  onClick={handleNext}
+                  disabled={submitMut.isPending}
+                  style={{
+                    padding: "8px 24px",
+                    fontSize: "13px",
+                    fontWeight: 500,
+                    background: "var(--color-background-info)",
+                    color: "var(--color-text-info)",
+                    border: "0.5px solid var(--color-border-info)",
+                    borderRadius: "var(--border-radius-md)",
+                    cursor: "pointer",
+                    fontFamily: "inherit",
+                  }}
+                >
+                  {submitMut.isPending ? "جارٍ..." : stepIndex === steps.length - 1 ? "المراجعة →" : "التالي →"}
+                </button>
+              )}
+            </div>
           </div>
         </div>
       )}

@@ -41,7 +41,7 @@ export type ConditionNode = SimpleCondition | ConditionGroup;
 // ==================== Action Types ====================
 
 export type ActionType =
-  | 'set_value' | 'override_value' | 'calculate' | 'set_fee' | 'apply_discount'
+  | 'set_value' | 'override_value' | 'calculate' | 'set_fee' | 'apply_discount' | 'multiply_and_add'
   | 'show' | 'hide' | 'enable' | 'disable'
   | 'set_visibility' | 'set_required' | 'set_optional' | 'set_readonly'
   | 'set_editable' | 'set_lock' | 'unlock' | 'set_options' | 'append_options'
@@ -59,7 +59,9 @@ export interface RuleAction {
   type: ActionType;
   field_id?: string;
   target_field_id?: string; // for copy_value
+  source_field_id?: string; // for multiply_and_add, copy_value
   value?: string | number | boolean | object;
+  multiplier?: string | number; // for multiply_and_add
   message_ar?: string;
   message_en?: string;
   workflow_id?: string; // for route_to_workflow
@@ -90,6 +92,7 @@ export interface EnterpriseRule {
   category: RuleCategory;
   priority: number; // 1-10000, higher = evaluated first
   is_active: boolean;
+  realtime_enabled?: boolean;
   sort_order: number;
 
   // Conditions
@@ -290,6 +293,7 @@ export const ACTION_METADATA: ActionMetadata[] = [
   { value: 'calculate', label: 'حساب', label_en: 'Calculate', icon: '🔢', category: 'field', requires_field: true, requires_value: true, description_ar: 'حساب قيمة بصيغة' },
   { value: 'set_fee', label: 'تعيين رسوم', label_en: 'Set Fee', icon: '💰', category: 'financial', requires_value: true, description_ar: 'تعيين رسوم' },
   { value: 'apply_discount', label: 'تطبيق خصم', label_en: 'Apply Discount', icon: '🏷️', category: 'financial', requires_value: true, description_ar: 'تطبيق نسبة خصم' },
+  { value: 'multiply_and_add', label: 'ضرب وإضافة', label_en: 'Multiply & Add', icon: '✖️➕', category: 'financial', requires_field: true, requires_value: true, description_ar: 'ضرب قيمة الحقل × رقم ثابت وإضافة الناتج لحقل آخر' },
   { value: 'show', label: 'إظهار', label_en: 'Show', icon: '👁️', category: 'field', requires_field: true, description_ar: 'إظهار حقل' },
   { value: 'hide', label: 'إخفاء', label_en: 'Hide', icon: '🙈', category: 'field', requires_field: true, description_ar: 'إخفاء حقل' },
   { value: 'enable', label: 'تفعيل', label_en: 'Enable', icon: '✓', category: 'field', requires_field: true, description_ar: 'تفعيل حقل' },

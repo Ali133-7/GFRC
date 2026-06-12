@@ -41,7 +41,7 @@ export const workflowVersionApi = {
   get: (workflowId: string, versionId: string) =>
     client
       .get(`/workflows/${workflowId}/versions/${versionId}`)
-      .then((r) => (r.data as WorkflowVersion) ?? null),
+      .then((r) => (r.data as any)?.data?.version ?? (r.data as any)?.version ?? null),
 
   create: (workflowId: string, change_summary?: string) =>
     client
@@ -208,4 +208,23 @@ export const workflowExecutionApi = {
 
   cancel: (id: string, reason: string) =>
     client.post(`/workflow-executions/${id}/cancel`, { reason }).then((r) => r.data ?? null),
+
+  // Real-time rule execution
+  executeRealTime: (
+    id: string, 
+    fieldId: string, 
+    value: any, 
+    values: Record<string, any>,
+    options?: { signal?: AbortSignal }
+  ) =>
+    client
+      .post(`/workflow-executions/${id}/execute-realtime`, { field_id: fieldId, value, values }, {
+        signal: options?.signal
+      })
+      .then((r) => r.data ?? null),
+
+  getExecutionStatus: (id: string) =>
+    client
+      .get(`/workflow-executions/${id}/execution-status`)
+      .then((r) => r.data ?? null),
 };

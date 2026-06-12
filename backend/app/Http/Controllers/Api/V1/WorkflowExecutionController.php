@@ -9,6 +9,11 @@ use App\Services\WorkflowExecutionService;
 use App\Services\WorkflowFieldSchemaBuilder;
 use App\Services\ValidationEngine;
 use App\Services\EnterpriseRuleEngine;
+use App\Services\RealTimeRuleEngine;
+use App\Services\DependencyResolver;
+use App\Services\ExecutionStateManager;
+use App\Services\FinancialRecalculator;
+use App\Services\FeeEngine;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
@@ -20,23 +25,28 @@ class WorkflowExecutionController extends ApiController
     protected ValidationEngine $validationEngine;
     protected EnterpriseRuleEngine $enterpriseEngine;
     protected WorkflowBranchController $branchController;
-
+    protected RealTimeRuleEngine $realTimeEngine;
+    
     public function __construct(
         WorkflowExecutionService $executionService,
         WorkflowFieldSchemaBuilder $schemaBuilder,
         ValidationEngine $validationEngine,
         EnterpriseRuleEngine $enterpriseEngine,
-        WorkflowBranchController $branchController
+        WorkflowBranchController $branchController,
+        RealTimeRuleEngine $realTimeEngine
     ) {
         $this->executionService = $executionService;
         $this->schemaBuilder = $schemaBuilder;
         $this->validationEngine = $validationEngine;
         $this->enterpriseEngine = $enterpriseEngine;
         $this->branchController = $branchController;
+        $this->realTimeEngine = $realTimeEngine;
     }
 
     public function store(Request $request): JsonResponse
     {
+        $this->authorize('create', WorkflowExecution::class);
+
         $data = $request->validate([
             'workflow_version_id' => 'required|string|exists:workflow_versions,id',
         ]);
@@ -68,6 +78,8 @@ class WorkflowExecutionController extends ApiController
         $execution = WorkflowExecution::with(['version.workflow', 'receipt', 'starter'])
             ->findOrFail($id);
 
+        $this->authorize('view', $execution);
+
         return $this->success($execution);
     }
 
@@ -75,6 +87,8 @@ class WorkflowExecutionController extends ApiController
     {
         $execution = WorkflowExecution::with('version.steps', 'version.fields.registerField')
             ->findOrFail($id);
+
+        $this->authorize('update', $execution);
 
         if (!$execution->isInProgress() && !$execution->isPaused()) {
             return $this->error('هذا التنفيذ ليس نشطاً', 422);
@@ -158,6 +172,8 @@ class WorkflowExecutionController extends ApiController
 
     public function preview(Request $request): JsonResponse
     {
+        $this->authorize('preview', WorkflowExecution::class);
+
         $data = $request->validate([
             'workflow_version_id' => 'required|string|exists:workflow_versions,id',
             'values' => 'required|array',
@@ -176,6 +192,8 @@ class WorkflowExecutionController extends ApiController
     {
         return DB::transaction(function () use ($request, $id) {
             $execution = WorkflowExecution::lockForUpdate()->findOrFail($id);
+            
+            $this->authorize('complete', $execution);
 
             if (!$execution->isInProgress()) {
                 return $this->error('هذا التنفيذ ليس نشطاً', 422);
@@ -198,6 +216,8 @@ class WorkflowExecutionController extends ApiController
     {
         return DB::transaction(function () use ($request, $id) {
             $execution = WorkflowExecution::lockForUpdate()->findOrFail($id);
+            
+            $this->authorize('cancel', $execution);
 
             if (!$execution->isInProgress()) {
                 return $this->error('هذا التنفيذ ليس نشطاً', 422);
@@ -215,6 +235,8 @@ class WorkflowExecutionController extends ApiController
 
     public function index(Request $request): JsonResponse
     {
+        $this->authorize('viewAny', WorkflowExecution::class);
+
         $query = WorkflowExecution::with(['version.workflow', 'register', 'starter', 'receipt'])
             ->when($request->workflow_id, fn($q, $id) => $q->whereHas('version', fn($vq) => $vq->where('workflow_id', $id)))
             ->when($request->status, fn($q, $s) => $q->where('status', $s))
@@ -237,6 +259,8 @@ class WorkflowExecutionController extends ApiController
     {
         $execution = WorkflowExecution::with(['version.workflow'])->findOrFail($id);
 
+        $this->authorize('branch', $execution);
+
         return $this->success([
             'execution_id' => $execution->id,
             'workflow_id' => $execution->version->workflow_id,
@@ -255,6 +279,8 @@ class WorkflowExecutionController extends ApiController
     public function switchMode(Request $request, string $id): JsonResponse
     {
         $execution = WorkflowExecution::findOrFail($id);
+
+        $this->authorize('branch', $execution);
 
         if (!$execution->isInProgress()) {
             return $this->error('هذا التنفيذ ليس نشطاً', 422);
@@ -278,6 +304,8 @@ class WorkflowExecutionController extends ApiController
     {
         $execution = WorkflowExecution::findOrFail($id);
 
+        $this->authorize('branch', $execution);
+
         if (!$execution->isInProgress()) {
             return $this->error('هذا التنفيذ ليس نشطاً', 422);
         }
@@ -299,6 +327,8 @@ class WorkflowExecutionController extends ApiController
     {
         $execution = WorkflowExecution::findOrFail($id);
 
+        $this->authorize('branch', $execution);
+
         if (!$execution->isInProgress()) {
             return $this->error('هذا التنفيذ ليس نشطاً', 422);
         }
@@ -314,6 +344,8 @@ class WorkflowExecutionController extends ApiController
     public function redirectExecution(Request $request, string $id): JsonResponse
     {
         $execution = WorkflowExecution::with('version.workflow')->findOrFail($id);
+
+        $this->authorize('branch', $execution);
 
         if (!$execution->isInProgress()) {
             return $this->error('هذا التنفيذ ليس نشطاً', 422);
@@ -362,6 +394,8 @@ class WorkflowExecutionController extends ApiController
     {
         $execution = WorkflowExecution::findOrFail($id);
 
+        $this->authorize('update', $execution);
+
         if (!$execution->isInProgress()) {
             return $this->error('هذا التنفيذ ليس نشطاً', 422);
         }
@@ -377,6 +411,67 @@ class WorkflowExecutionController extends ApiController
         return $this->success([
             'execution_id' => $execution->id,
             'saved_values' => $execution->values_snapshot,
+        ]);
+    }
+
+    /**
+     * Real-time rule execution endpoint
+     * Executes rules immediately when a field changes
+     */
+    public function executeRealTime(Request $request, string $id): JsonResponse
+    {
+        $execution = WorkflowExecution::findOrFail($id);
+
+        $this->authorize('update', $execution);
+
+        if (!$execution->isInProgress()) {
+            return $this->error('هذا التنفيذ ليس نشطاً', 422);
+        }
+
+        $data = $request->validate([
+            'field_id' => 'required|string',
+            'value' => 'nullable',
+            'values' => 'required|array',
+        ]);
+
+        $changedFieldId = $data['field_id'];
+        $values = $data['values'];
+
+        // Execute real-time rule evaluation
+        $result = $this->realTimeEngine->execute(
+            $execution->workflow_version_id,
+            $changedFieldId,
+            $values,
+            $execution->id
+        );
+
+        // Log the result for debugging
+        \Log::info('[executeRealTime] Result:', $result);
+
+        // Persist execution status
+        $execution->setExecutionStatus($result['success'] ? 'READY' : 'ERROR');
+        if (!$result['success']) {
+            $execution->setExecutionError($result['error']);
+        }
+
+        return $this->success($result);
+    }
+
+    /**
+     * Get execution status
+     */
+    public function getExecutionStatus(string $id): JsonResponse
+    {
+        $execution = WorkflowExecution::findOrFail($id);
+
+        $this->authorize('view', $execution);
+
+        return $this->success([
+            'execution_id' => $execution->id,
+            'status' => $execution->getExecutionStatus(),
+            'error' => $execution->getExecutionError(),
+            'is_ready' => $execution->isExecutionReady(),
+            'is_executing' => $execution->isExecutionInProgress(),
         ]);
     }
 }

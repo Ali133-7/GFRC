@@ -111,7 +111,17 @@ class Register extends Model
 
     public function generateReceiptNumber(): string
     {
-        $this->increment('current_sequence');
+        // Use database-level locking to prevent race conditions
+        $locked = static::lockForUpdate()->find($this->id);
+        if (!$locked) {
+            throw new \RuntimeException('Failed to lock register for receipt number generation');
+        }
+        
+        $locked->increment('current_sequence');
+        
+        // Update this instance to match
+        $this->current_sequence = $locked->current_sequence;
+        
         return sprintf('%s-%d-%06d', $this->code, $this->fiscal_year, $this->current_sequence);
     }
 }
