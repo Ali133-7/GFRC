@@ -1,0 +1,135 @@
+.register-tree {
+  user-select: none;
+}
+
+.register-node {
+  margin-bottom: 4px;
+}
+
+.register-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--color-text-primary);
+  transition: background 0.15s ease;
+}
+
+.register-header:hover {
+  background: var(--color-background-secondary);
+}
+
+.register-header.selected {
+  background: var(--color-background-info);
+  color: var(--color-text-info);
+}
+
+.register-chevron {
+  font-size: 10px;
+  width: 12px;
+  color: var(--color-text-tertiary);
+}
+
+.register-icon {
+  font-size: 12px;
+}
+
+.register-name {
+  flex: 1;
+  font-weight: 600;
+}
+
+.register-count {
+  font-size: 10px;
+  color: var(--color-text-tertiary);
+  background: var(--color-background-secondary);
+  padding: 1px 5px;
+  border-radius: 10px;
+}
+
+.register-select-btn {
+  width: 18px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 0.5px solid var(--color-border-secondary);
+  border-radius: 4px;
+  background: var(--color-background-primary);
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.register-select-btn.selected {
+  background: var(--color-background-success);
+  color: var(--color-text-success);
+  border-color: var(--color-border-success);
+}
+
+.register-fields {
+  padding-right: 18px;
+  padding-top: 2px;
+}
+
+.field-browser-field {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  border-radius: 4px;
+  cursor: grab;
+  font-size: 11px;
+  color: var(--color-text-secondary);
+  transition: background 0.15s ease;
+}
+
+.field-browser-field:hover {
+  background: var(--color-background-secondary);
+}
+
+.field-icon {
+  font-size: 10px;
+  width: 16px;
+  text-align: center;
+}
+
+.field-label {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.field-favorite-btn {
+  width: 16px;
+  height: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  color: var(--color-text-tertiary);
+  font-size: 12px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.field-browser-field:hover .field-favorite-btn {
+  opacity: 1;
+}
+
+.field-favorite-btn:hover {
+  color: var(--color-text-warning);
+}
+
+.empty-fields {
+  padding: 8px 10px;
+  font-size: 10px;
+  color: var(--color-text-tertiary);
+  font-style: italic;
+}

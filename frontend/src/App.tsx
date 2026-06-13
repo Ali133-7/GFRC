@@ -29,6 +29,7 @@ import RegisterReceiptsPage from '@/pages/registers/RegisterReceiptsPage';
 import UserListPage from '@/pages/users/UserListPage';
 import UserFormPage from '@/pages/users/UserFormPage';
 import ReportsPage from '@/pages/ReportsPage';
+import ReportBuilderPage from '@/pages/reports/ReportBuilderPage';
 import AuditLogPage from '@/pages/AuditLogPage';
 import SettingsPage from '@/pages/SettingsPage';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
@@ -88,6 +89,7 @@ export default function App() {
             <Route path="users/new" element={<UserFormPage />} />
             <Route path="users/:id" element={<UserFormPage />} />
             <Route path="reports" element={<ReportsPage />} />
+            <Route path="reports/builder" element={<ReportBuilderPage />} />
             <Route path="audit-logs" element={<AuditLogPage />} />
             <Route path="transaction-templates" element={<TransactionTemplateListPage />} />
             <Route path="transaction-templates/new" element={<TransactionTemplateFormPage />} />

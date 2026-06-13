@@ -9,7 +9,7 @@ import { formatCurrency } from "@/utils/formatCurrency";
 import { formatNumber } from "@/utils/formatNumber";
 import { todayISO } from "@/utils/formatDate";
 
-type TabKey = "daily" | "monthly" | "user" | "register";
+type TabKey = "daily" | "monthly" | "user" | "register" | "custom";
 
 interface DailySummary { date: string; total_amount: string; receipts_count: number; issued_count: number; by_register?: Array<{ register_name: string; register_code: string; total: string; count: number }>; }
 interface MonthlySummary { year: number; month: number; total_amount: string; receipts_count: number; by_day?: Array<{ date: string; total: string; count: number }>; }
@@ -49,6 +49,14 @@ export default function ReportsPage() {
     enabled: tab === "register",
   });
 
+  const { data: dynamicReports } = useQuery({
+    queryKey: ["dynamic-reports"],
+    queryFn: async () => {
+      const r = await client.get("/reports");
+      return (r.data?.data ?? r.data) as any[];
+    },
+  });
+
   const handleExport = async () => {
     const params = tab === "daily" ? `type=daily&date=${date}` : tab === "monthly" ? `type=monthly&year=${year}&month=${month}` : `type=${tab}&date_from=${dateFrom}&date_to=${dateTo}`;
     try {
@@ -76,19 +84,143 @@ export default function ReportsPage() {
 
   return (
     <div dir="rtl" style={{ padding: "24px", fontFamily: "'Noto Sans Arabic', sans-serif" }}>
-      <PageHeader title="التقارير">
+      <PageHeader 
+        title="التقارير"
+        subtitle="التقارير الجاهزة والمخصصة"
+        action={{
+          label: "✨ تصميم تقرير جديد",
+          onClick: () => window.location.href = "/reports/builder",
+          variant: "primary",
+        }}
+      >
         {can("export-reports") && <Button variant="secondary" onClick={handleExport}>⬇ تصدير CSV</Button>}
       </PageHeader>
 
       {/* Tabs */}
       <div style={{ display: "flex", borderBottom: "0.5px solid var(--color-border-tertiary)", marginBottom: "20px" }}>
-        <button style={tabStyle("daily")}     onClick={() => setTab("daily")}>يومي</button>
-        <button style={tabStyle("monthly")}   onClick={() => setTab("monthly")}>شهري</button>
-        <button style={tabStyle("user")}      onClick={() => setTab("user")}>نشاط المستخدمين</button>
-        <button style={tabStyle("register")}  onClick={() => setTab("register")}>ملخص السجل</button>
+        <button style={tabStyle("daily")}     onClick={() => setTab("daily")}>📅 يومي</button>
+        <button style={tabStyle("monthly")}   onClick={() => setTab("monthly")}>📆 شهري</button>
+        <button style={tabStyle("user")}      onClick={() => setTab("user")}>👥 المستخدمين</button>
+        <button style={tabStyle("register")}  onClick={() => setTab("register")}>📒 السجل</button>
+        <button style={tabStyle("custom")}    onClick={() => setTab("custom")}>🎯 مخصصة</button>
       </div>
 
-      {/* Daily */}
+      {/* Custom Reports Tab */}
+      {tab === "custom" && (
+        <div>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
+            <h2 style={{ fontSize: "16px", fontWeight: 600, color: "var(--color-text-primary)" }}>
+              🎯 التقارير المخصصة ({dynamicReports?.length ?? 0})
+            </h2>
+            <button
+              onClick={() => window.location.href = "/reports/builder"}
+              style={{
+                padding: "8px 16px",
+                fontSize: "13px",
+                fontWeight: 500,
+                background: "var(--color-background-success)",
+                color: "var(--color-text-success)",
+                border: "0.5px solid var(--color-border-success)",
+                borderRadius: "6px",
+                cursor: "pointer",
+                fontFamily: "inherit",
+              }}
+            >
+              ✨ إنشاء تقرير جديد
+            </button>
+          </div>
+          
+          {dynamicReports && dynamicReports.length > 0 ? (
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(350px, 1fr))", gap: "16px" }}>
+              {dynamicReports.map((report: any) => (
+                <div
+                  key={report.id}
+                  style={{
+                    padding: "16px",
+                    background: "var(--color-background-primary)",
+                    border: "0.5px solid var(--color-border-tertiary)",
+                    borderRadius: "8px",
+                  }}
+                >
+                  <div style={{ marginBottom: "12px" }}>
+                    <div style={{ fontSize: "14px", fontWeight: 600, color: "var(--color-text-primary)", marginBottom: "4px" }}>
+                      {report.name_ar || report.name || 'تقرير'}
+                    </div>
+                    <div style={{ fontSize: "11px", color: "var(--color-text-tertiary)" }}>
+                      {report.code}
+                    </div>
+                  </div>
+                  
+                  <div style={{ fontSize: "11px", color: "var(--color-text-tertiary)", marginBottom: "12px" }}>
+                    <div>📊 المصدر: {report.data_source}</div>
+                    <div>📑 الحقول: {report.fields?.length ?? 0}</div>
+                    <div>🔢 المقاييس: {report.aggregations?.length ?? 0}</div>
+                  </div>
+                  
+                  <div style={{ display: "flex", gap: "8px" }}>
+                    <button
+                      onClick={() => window.location.href = `/reports/view/${report.id}`}
+                      style={{
+                        flex: 1,
+                        padding: "6px 12px",
+                        fontSize: "12px",
+                        fontWeight: 500,
+                        background: "var(--color-background-info)",
+                        color: "var(--color-text-info)",
+                        border: "0.5px solid var(--color-border-info)",
+                        borderRadius: "6px",
+                        cursor: "pointer",
+                        fontFamily: "inherit",
+                      }}
+                    >
+                      ▶️ عرض
+                    </button>
+                    <button
+                      onClick={() => window.location.href = `/reports/builder?id=${report.id}`}
+                      style={{
+                        padding: "6px 12px",
+                        fontSize: "12px",
+                        fontWeight: 500,
+                        background: "none",
+                        color: "var(--color-text-secondary)",
+                        border: "0.5px solid var(--color-border-secondary)",
+                        borderRadius: "6px",
+                        cursor: "pointer",
+                        fontFamily: "inherit",
+                      }}
+                    >
+                      ✏️
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div style={{ textAlign: "center", padding: "48px", color: "var(--color-text-tertiary)" }}>
+              <div style={{ fontSize: "48px", marginBottom: "16px" }}>📊</div>
+              <div style={{ fontSize: "14px", fontWeight: 500, marginBottom: "8px" }}>لا توجد تقارير مخصصة</div>
+              <button
+                onClick={() => window.location.href = "/reports/builder"}
+                style={{
+                  padding: "10px 24px",
+                  fontSize: "13px",
+                  fontWeight: 600,
+                  background: "var(--color-background-success)",
+                  color: "var(--color-text-success)",
+                  border: "0.5px solid var(--color-border-success)",
+                  borderRadius: "8px",
+                  cursor: "pointer",
+                  fontFamily: "inherit",
+                }}
+              >
+                ✨ إنشاء أول تقرير
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Daily Tab */}
       {tab === "daily" && (
         <div>
           <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "16px" }}>
@@ -119,11 +251,11 @@ export default function ReportsPage() {
                 </table>
               )}
             </>
-          ) : <div style={{ color: "var(--color-text-tertiary)", fontSize: "13px", textAlign: "center", padding: "24px" }}>لا توجد بيانات لهذا اليوم</div>}
+          ) : <div style={{ color: "var(--color-text-tertiary)", fontSize: "13px", textAlign: "center", padding: "24px" }}>لا توجد بيانات</div>}
         </div>
       )}
 
-      {/* Monthly */}
+      {/* Monthly Tab */}
       {tab === "monthly" && (
         <div>
           <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "16px" }}>
@@ -162,7 +294,7 @@ export default function ReportsPage() {
         </div>
       )}
 
-      {/* User Activity */}
+      {/* User Activity Tab */}
       {tab === "user" && (
         <div>
           <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "16px" }}>
@@ -191,7 +323,7 @@ export default function ReportsPage() {
         </div>
       )}
 
-      {/* Register Summary */}
+      {/* Register Summary Tab */}
       {tab === "register" && (
         <div>
           <div style={{ display: "flex", alignItems: "center", gap: "10px", marginBottom: "16px" }}>

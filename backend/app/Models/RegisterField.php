@@ -12,6 +12,7 @@ class RegisterField extends Model
     use HasFactory, SoftDeletes;
 
     protected $keyType = 'string';
+
     public $incrementing = false;
 
     protected static function boot(): void
@@ -30,7 +31,9 @@ class RegisterField extends Model
         'name',
         'label_ar',
         'label_en',
+        'description',
         'field_type',
+        'category',
         'is_required',
         'is_visible',
         'is_editable',
@@ -38,6 +41,9 @@ class RegisterField extends Model
         'is_financial',
         'is_insured',
         'insurance_value',
+        'is_searchable',
+        'is_filterable',
+        'is_aggregatable',
         'priority',
         'sort_order',
         'validation_rules',
@@ -53,6 +59,9 @@ class RegisterField extends Model
         'is_locked' => 'boolean',
         'is_financial' => 'boolean',
         'is_insured' => 'boolean',
+        'is_searchable' => 'boolean',
+        'is_filterable' => 'boolean',
+        'is_aggregatable' => 'boolean',
         'insurance_value' => 'decimal:3',
         'priority' => 'integer',
         'sort_order' => 'integer',

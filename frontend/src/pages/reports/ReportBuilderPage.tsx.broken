@@ -1,0 +1,1295 @@
+import React, { useState, useEffect } from "react";
+import { useNavigate, useSearchParams } from "react-router-dom";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import client from "@/api/client";
+import { PageHeader } from "@/components/layout/PageHeader";
+import { LoadingSpinner } from "@/components/ui/LoadingSpinner";
+
+export default function ReportBuilderPage() {
+  const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const editId = searchParams.get("id");
+  const qc = useQueryClient();
+
+  const [activeTab, setActiveTab] = useState<"basic" | "source" | "fields" | "filters" | "aggregations" | "preview">("basic");
+
+  const [formData, setFormData] = useState({
+    name: "",
+    name_ar: "",
+    code: "",
+    description: "",
+    data_source_type: "table" as "table" | "query" | "custom",
+    data_source: "receipts",
+    selected_registers: [] as string[],
+    visibility: "private" as const,
+    group_by: [] as string[],
+    order_by: "" as string,
+    order_direction: "ASC" as "ASC" | "DESC",
+  });
+
+  const [selectedFields, setSelectedFields] = useState<Array<{
+    field_name: string;
+    field_label: string;
+    field_label_ar: string;
+    is_visible: boolean;
+    is_filterable: boolean;
+    is_sortable: boolean;
+    sort_order: number;
+    formatting?: any;
+  }>>([]);
+
+  const [selectedAggregations, setSelectedAggregations] = useState<Array<{
+    field_name: string;
+    aggregation_type: "SUM" | "COUNT" | "AVG" | "MIN" | "MAX" | "CUSTOM";
+    alias: string;
+    alias_ar: string;
+    format?: string;
+    decimal_places: number;
+    sort_order: number;
+    expression?: any;
+  }>>([]);
+
+  const [selectedFilters, setSelectedFilters] = useState<Array<{
+    filter_name: string;
+    filter_label: string;
+    filter_label_ar: string;
+    field_name: string;
+    filter_type: "date_range" | "select" | "multi_select" | "text" | "number" | "boolean";
+    operator: string;
+    is_required: boolean;
+    is_multiple: boolean;
+    default_value?: any;
+    options?: Array<{ value: string; label: string }>;
+    sort_order: number;
+  }>>([]);
+
+  const { data: registers, isLoading: loadingRegisters } = useQuery({
+    queryKey: ["registers-list"],
+    queryFn: async () => {
+      const r = await client.get("/registers");
+      return (r.data?.data ?? r.data) as any[];
+    },
+  });
+
+  const { data: availableFields, isLoading: loadingFields } = useQuery({
+    queryKey: ["report-fields", formData.data_source, formData.selected_registers.join(",") || "none"],
+    queryFn: async () => {
+      try {
+        const params: any = { data_source: formData.data_source };
+        if (formData.selected_registers.length > 0) {
+          params.register_ids = formData.selected_registers.join(",");
+        }
+        
+        const r = await client.get("/reports/fields/available", { params });
+        const fields = (r.data?.data?.fields ?? r.data?.data ?? r.data) as any[];
+        console.log('Fetched fields:', fields);
+        return fields.length > 0 ? fields : getDefaultFields(formData.data_source);
+      } catch (err) {
+        console.warn('Failed to fetch fields, using defaults:', err);
+        return getDefaultFields(formData.data_source);
+      }
+    },
+    retry: 1,
+    enabled: formData.data_source !== '',
+  });
+
+  // Default fields helper
+  const getDefaultFields = (dataSource: string) => {
+    const defaultFields: Record<string, Array<{name: string; type: string; nullable: boolean}>> = {
+      receipts: [
+        { name: 'id', type: 'string', nullable: false },
+        { name: 'transaction_number', type: 'string', nullable: false },
+        { name: 'amount', type: 'currency', nullable: false },
+        { name: 'status', type: 'string', nullable: false },
+        { name: 'payment_method', type: 'string', nullable: true },
+        { name: 'notes', type: 'string', nullable: true },
+        { name: 'created_at', type: 'datetime', nullable: false },
+        { name: 'updated_at', type: 'datetime', nullable: false },
+      ],
+      registers: [
+        { name: 'id', type: 'string', nullable: false },
+        { name: 'name_ar', type: 'string', nullable: false },
+        { name: 'name_en', type: 'string', nullable: true },
+        { name: 'code', type: 'string', nullable: false },
+        { name: 'description', type: 'string', nullable: true },
+        { name: 'is_active', type: 'boolean', nullable: false },
+        { name: 'created_at', type: 'datetime', nullable: false },
+      ],
+      users: [
+        { name: 'id', type: 'string', nullable: false },
+        { name: 'username', type: 'string', nullable: false },
+        { name: 'name', type: 'string', nullable: false },
+        { name: 'email', type: 'string', nullable: true },
+        { name: 'is_active', type: 'boolean', nullable: false },
+        { name: 'created_at', type: 'datetime', nullable: false },
+      ],
+      transactions: [
+        { name: 'id', type: 'string', nullable: false },
+        { name: 'transaction_number', type: 'string', nullable: false },
+        { name: 'amount', type: 'currency', nullable: false },
+        { name: 'status', type: 'string', nullable: false },
+        { name: 'created_at', type: 'datetime', nullable: false },
+      ],
+    };
+    return defaultFields[dataSource] || defaultFields.receipts;
+  };
+
+  const { data: existingReport, isLoading: loadingReport } = useQuery({
+    queryKey: ["report", editId],
+    queryFn: async () => {
+      if (!editId) return null;
+      const r = await client.get(`/reports/${editId}`);
+      const report = r.data?.data ?? r.data;
+      
+      // Load existing report data
+      if (report) {
+        setFormData({
+          name: report.name || "",
+          name_ar: report.name_ar || "",
+          code: report.code || "",
+          description: report.description || "",
+          data_source_type: "table",
+          data_source: report.data_source || "receipts",
+          selected_registers: report.configuration?.register_ids || [],
+          visibility: report.visibility || "private",
+          group_by: report.groupings?.map((g: any) => g.field_name) || [],
+          order_by: report.configuration?.order_by || "",
+          order_direction: report.configuration?.order_direction || "ASC",
+        });
+        
+        if (report.fields) setSelectedFields(report.fields);
+        if (report.aggregations) setSelectedAggregations(report.aggregations);
+        if (report.filters) setSelectedFilters(report.filters);
+      }
+      
+      return report;
+    },
+    enabled: !!editId,
+  });
+
+  const createReport = useMutation({
+    mutationFn: async (data: any) => {
+      if (editId) {
+        return client.put(`/reports/${editId}`, data);
+      }
+      return client.post("/reports", data);
+    },
+    onSuccess: (response) => {
+      qc.invalidateQueries({ queryKey: ["dynamic-reports"] });
+      alert(editId ? "تم تحديث التقرير بنجاح ✓" : "تم إنشاء التقرير بنجاح ✓");
+      navigate(`/reports/view/${response.data?.data?.id || editId}`);
+    },
+    onError: (err: any) => {
+      const errors = err.response?.data?.errors;
+      let errorMsg = "فشل الحفظ";
+      if (errors) {
+        errorMsg = Object.values(errors).flat().join("\n");
+      } else if (err.response?.data?.message) {
+        errorMsg = err.response?.data?.message;
+      }
+      alert(errorMsg);
+    },
+  });
+
+  const handleSubmit = () => {
+    if (!formData.name || !formData.name_ar) {
+      alert("يرجى إدخال الاسم (عربي وإنجليزي)");
+      setActiveTab("basic");
+      return;
+    }
+
+    if (selectedFields.length === 0) {
+      alert("يرجى اختيار حقل واحد على الأقل");
+      setActiveTab("fields");
+      return;
+    }
+
+    const reportData = {
+      ...formData,
+      configuration: {
+        register_ids: formData.selected_registers,
+        joins: formData.selected_registers.length > 1 ? [{
+          table: "registers",
+          first: `${formData.data_source}.register_id`,
+          operator: "=",
+          second: "registers.id"
+        }] : [],
+        order_by: formData.order_by,
+        order_direction: formData.order_direction,
+        group_by: formData.group_by,
+      },
+      fields: selectedFields.map((f, i) => ({ ...f, sort_order: i })),
+      aggregations: selectedAggregations.map((agg, i) => ({ ...agg, sort_order: i })),
+      filters: selectedFilters.map((f, i) => ({ ...f, sort_order: i })),
+      groupings: formData.group_by.map((field, i) => ({
+        field_name: field,
+        field_label: field,
+        sort_order: i,
+        show_subtotals: true,
+      })),
+    };
+
+    createReport.mutate(reportData);
+  };
+
+  const toggleField = (field: any) => {
+    setSelectedFields(prev => {
+      const exists = prev.find(f => f.field_name === field.field_name);
+      if (exists) {
+        return prev.filter(f => f.field_name !== field.field_name);
+      }
+      return [...prev, { ...field, sort_order: prev.length }];
+    });
+  };
+
+  const updateFieldConfig = (fieldName: string, updates: any) => {
+    setSelectedFields(prev => prev.map(f => 
+      f.field_name === fieldName ? { ...f, ...updates } : f
+    ));
+  };
+
+  const addAggregation = (field: string, type: string) => {
+    const alias = `${type}(${field})`;
+    setSelectedAggregations(prev => [
+      ...prev,
+      { 
+        field_name: field, 
+        aggregation_type: type as any, 
+        alias,
+        alias_ar: alias,
+        format: type === "SUM" || type === "AVG" ? "currency" : "number",
+        decimal_places: 3,
+        sort_order: prev.length,
+      }
+    ]);
+  };
+
+  const removeAggregation = (index: number) => {
+    setSelectedAggregations(prev => prev.filter((_, i) => i !== index));
+  };
+
+  const addFilter = (filterType: string) => {
+    setSelectedFilters(prev => [
+      ...prev,
+      {
+        filter_name: `filter_${prev.length + 1}`,
+        filter_label: "Filter " + (prev.length + 1),
+        filter_label_ar: "فلتر " + (prev.length + 1),
+        field_name: "",
+        filter_type: filterType as any,
+        operator: "=",
+        is_required: false,
+        is_multiple: false,
+        sort_order: prev.length,
+      }
+    ]);
+  };
+
+  const updateFilter = (index: number, updates: any) => {
+    setSelectedFilters(prev => prev.map((f, i) => 
+      i === index ? { ...f, ...updates } : f
+    ));
+  };
+
+  const removeFilter = (index: number) => {
+    setSelectedFilters(prev => prev.filter((_, i) => i !== index));
+  };
+
+  const toggleRegister = (registerId: string) => {
+    setFormData(prev => ({
+      ...prev,
+      selected_registers: prev.selected_registers.includes(registerId)
+        ? prev.selected_registers.filter(id => id !== registerId)
+        : [...prev.selected_registers, registerId]
+    }));
+  };
+
+  const tabStyle = (tab: string): React.CSSProperties => ({
+    padding: "10px 16px",
+    fontSize: "13px",
+    fontWeight: activeTab === tab ? 600 : 400,
+    border: "none",
+    background: activeTab === tab ? "var(--color-background-info)" : "var(--color-background-secondary)",
+    color: activeTab === tab ? "var(--color-text-info)" : "var(--color-text-secondary)",
+    borderRadius: "6px 6px 0 0",
+    cursor: "pointer",
+    fontFamily: "inherit",
+    borderBottom: activeTab === tab ? "2px solid var(--color-border-info)" : "2px solid transparent",
+  });
+
+  if (loadingReport) {
+    return (
+      <div dir="rtl" style={{ padding: "48px", textAlign: "center" }}>
+        <LoadingSpinner />
+      </div>
+    );
+  }
+
+  return (
+    <div dir="rtl" style={{ padding: "24px", fontFamily: "'Noto Sans Arabic', sans-serif", background: "var(--color-background)" }}>
+      <PageHeader
+        title={editId ? "✏️ تعديل التقرير" : "✨ تصميم تقرير جديد"}
+        subtitle="نظام تصميم التقارير المتقدم - Access-Style Report Builder"
+        back={{ label: "← رجوع", onClick: () => navigate("/reports") }}
+        action={{
+          label: createReport.isPending ? "⏳ جاري الحفظ..." : "💾 حفظ التقرير",
+          onClick: handleSubmit,
+          variant: "primary",
+        }}
+      />
+
+      {/* Tabs Navigation */}
+      <div style={{ display: "flex", gap: "4px", marginBottom: "0", borderBottom: "2px solid var(--color-border-tertiary)" }}>
+        <button style={tabStyle("basic")} onClick={() => setActiveTab("basic")}>📝 المعلومات الأساسية</button>
+        <button style={tabStyle("source")} onClick={() => setActiveTab("source")}>📊 مصدر البيانات</button>
+        <button style={tabStyle("fields")} onClick={() => setActiveTab("fields")}>📑 الحقول ({selectedFields.length})</button>
+        <button style={tabStyle("filters")} onClick={() => setActiveTab("filters")}>🔍 الفلاتر ({selectedFilters.length})</button>
+        <button style={tabStyle("aggregations")} onClick={() => setActiveTab("aggregations")}>🔢 المقاييس ({selectedAggregations.length})</button>
+        <button style={tabStyle("preview")} onClick={() => setActiveTab("preview")}>👁️ المعاينة</button>
+      </div>
+
+      {/* Tab Content */}
+      <div style={{ 
+        background: "var(--color-background-primary)", 
+        border: "0.5px solid var(--color-border-tertiary)", 
+        borderRadius: "0 0 var(--border-radius-lg) var(--border-radius-lg)",
+        padding: "24px",
+        minHeight: "500px",
+      }}>
+        {/* Basic Info Tab */}
+        {activeTab === "basic" && (
+          <div style={{ maxWidth: "800px", margin: "0 auto" }}>
+            <h3 style={{ fontSize: "16px", fontWeight: 600, color: "var(--color-text-primary)", marginBottom: "20px" }}>
+              📝 المعلومات الأساسية للتقرير
+            </h3>
+
+            <div style={{ display: "grid", gap: "16px" }}>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px" }}>
+                <div>
+                  <label style={{ fontSize: "12px", fontWeight: 600, color: "var(--color-text-secondary)", display: "block", marginBottom: "8px" }}>
+                    الاسم (عربي) <span style={{ color: "var(--color-text-danger)" }}>*</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={formData.name_ar}
+                    onChange={(e) => setFormData({ ...formData, name_ar: e.target.value })}
+                    style={{ width: "100%", padding: "10px 14px", fontSize: "13px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "6px", fontFamily: "inherit" }}
+                    placeholder="تقرير الإيرادات اليومية"
+                  />
+                </div>
+
+                <div>
+                  <label style={{ fontSize: "12px", fontWeight: 600, color: "var(--color-text-secondary)", display: "block", marginBottom: "8px" }}>
+                    الاسم (English) <span style={{ color: "var(--color-text-danger)" }}>*</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={formData.name}
+                    onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+                    style={{ width: "100%", padding: "10px 14px", fontSize: "13px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "6px", fontFamily: "inherit" }}
+                    placeholder="Daily Revenue Report"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label style={{ fontSize: "12px", fontWeight: 600, color: "var(--color-text-secondary)", display: "block", marginBottom: "8px" }}>
+                  الرمز (Code) - اختياري
+                </label>
+                <input
+                  type="text"
+                  value={formData.code}
+                  onChange={(e) => setFormData({ ...formData, code: e.target.value.toUpperCase() })}
+                  style={{ width: "100%", padding: "10px 14px", fontSize: "13px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "6px", fontFamily: "var(--font-mono)" }}
+                  placeholder="RPT_DAILY_001"
+                />
+              </div>
+
+              <div>
+                <label style={{ fontSize: "12px", fontWeight: 600, color: "var(--color-text-secondary)", display: "block", marginBottom: "8px" }}>
+                  الوصف
+                </label>
+                <textarea
+                  value={formData.description}
+                  onChange={(e) => setFormData({ ...formData, description: e.target.value })}
+                  style={{ width: "100%", padding: "10px 14px", fontSize: "13px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "6px", fontFamily: "inherit", minHeight: "100px", resize: "vertical" }}
+                  placeholder="وصف تفصيلي للتقرير وماذا يحتوي..."
+                />
+              </div>
+
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px" }}>
+                <div>
+                  <label style={{ fontSize: "12px", fontWeight: 600, color: "var(--color-text-secondary)", display: "block", marginBottom: "8px" }}>
+                    👁️ الرؤية
+                  </label>
+                  <select
+                    value={formData.visibility}
+                    onChange={(e) => setFormData({ ...formData, visibility: e.target.value as any })}
+                    style={{ width: "100%", padding: "10px 14px", fontSize: "13px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "6px", fontFamily: "inherit" }}
+                  >
+                    <option value="private">🔒 خاصة (للمنشئ فقط)</option>
+                    <option value="shared">👥 مشتركة (مشاركة)</option>
+                    <option value="public">🌍 عامة (للجميع)</option>
+                    <option value="role">👔 حسب الصلاحية</option>
+                    <option value="department">🏢 حسب القسم</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label style={{ fontSize: "12px", fontWeight: 600, color: "var(--color-text-secondary)", display: "block", marginBottom: "8px" }}>
+                    📊 الترتيب حسب
+                  </label>
+                  <select
+                    value={formData.order_by}
+                    onChange={(e) => setFormData({ ...formData, order_by: e.target.value })}
+                    style={{ width: "100%", padding: "10px 14px", fontSize: "13px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "6px", fontFamily: "inherit" }}
+                  >
+                    <option value="">-- بدون ترتيب --</option>
+                    <option value="created_at">تاريخ الإنشاء</option>
+                    <option value="updated_at">تاريخ التعديل</option>
+                    <option value="amount">المبلغ</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Data Source Tab */}
+        {activeTab === "source" && (
+          <div>
+            <h3 style={{ fontSize: "16px", fontWeight: 600, color: "var(--color-text-primary)", marginBottom: "20px" }}>
+              📊 تحديد مصدر البيانات
+            </h3>
+
+            {/* Register Selection */}
+            <div style={{ marginBottom: "24px" }}>
+              <label style={{ fontSize: "13px", fontWeight: 600, color: "var(--color-text-secondary)", display: "block", marginBottom: "12px" }}>
+                📒 اختيار السجلات المالية (يمكن اختيار أكثر من سجل)
+              </label>
+
+              {loadingRegisters ? (
+                <LoadingSpinner />
+              ) : registers && registers.length > 0 ? (
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))", gap: "12px", maxHeight: "400px", overflowY: "auto", padding: "12px", background: "var(--color-background-secondary)", borderRadius: "8px" }}>
+                  {registers.map((register: any) => (
+                    <label
+                      key={register.id}
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: "12px",
+                        padding: "12px",
+                        borderRadius: "6px",
+                        background: formData.selected_registers.includes(register.id) ? "var(--color-background-info)" : "var(--color-background-primary)",
+                        border: formData.selected_registers.includes(register.id) ? "1px solid var(--color-border-info)" : "1px solid var(--color-border-tertiary)",
+                        cursor: "pointer",
+                        transition: "all 0.2s",
+                      }}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={formData.selected_registers.includes(register.id)}
+                        onChange={() => toggleRegister(register.id)}
+                        style={{ width: "18px", height: "18px" }}
+                      />
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontSize: "13px", fontWeight: 600, color: formData.selected_registers.includes(register.id) ? "var(--color-text-info)" : "var(--color-text-primary)" }}>
+                          {register.name_ar || register.name}
+                        </div>
+                        <div style={{ fontSize: "11px", color: formData.selected_registers.includes(register.id) ? "var(--color-text-info)" : "var(--color-text-tertiary)" }}>
+                          {register.code}
+                        </div>
+                      </div>
+                    </label>
+                  ))}
+                </div>
+              ) : (
+                <div style={{ color: "var(--color-text-tertiary)", fontSize: "13px", textAlign: "center", padding: "24px" }}>
+                  لا توجد سجلات متاحة
+                </div>
+              )}
+
+              {formData.selected_registers.length > 0 && (
+                <div style={{ marginTop: "12px", padding: "10px", background: "var(--color-background-info)", borderRadius: "6px", fontSize: "12px", color: "var(--color-text-info)" }}>
+                  ✅ تم اختيار {formData.selected_registers.length} سجل/سجلات
+                </div>
+              )}
+            </div>
+
+            {/* Main Table Selection */}
+            <div>
+              <label style={{ fontSize: "13px", fontWeight: 600, color: "var(--color-text-secondary)", display: "block", marginBottom: "12px" }}>
+                📄 الجدول الرئيسي
+              </label>
+              <select
+                value={formData.data_source}
+                onChange={(e) => setFormData({ ...formData, data_source: e.target.value })}
+                style={{ width: "100%", maxWidth: "400px", padding: "10px 14px", fontSize: "13px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "6px", fontFamily: "inherit" }}
+              >
+                <option value="receipts">📄 الإيصالات (receipts)</option>
+                <option value="registers">📒 السجلات (registers)</option>
+                <option value="users">👥 المستخدمين (users)</option>
+                <option value="transactions">💰 المعاملات (transactions)</option>
+              </select>
+            </div>
+
+            {/* Join Preview */}
+            {formData.selected_registers.length > 0 && (
+              <div style={{ marginTop: "24px", padding: "16px", background: "var(--color-background-secondary)", borderRadius: "8px" }}>
+                <div style={{ fontSize: "12px", fontWeight: 600, color: "var(--color-text-secondary)", marginBottom: "8px" }}>
+                  🔗 روابط الجداول (Joins):
+                </div>
+                <code style={{ fontSize: "11px", color: "var(--color-text-tertiary)", fontFamily: "var(--font-mono)" }}>
+                  {formData.data_source}.register_id = registers.id
+                </code>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Fields Tab */}
+        {activeTab === "fields" && (
+          <div>
+            <h3 style={{ fontSize: "16px", fontWeight: 600, color: "var(--color-text-primary)", marginBottom: "20px" }}>
+              📑 اختيار وتكوين الحقول
+            </h3>
+
+            {loadingFields ? (
+              <LoadingSpinner />
+            ) : availableFields && availableFields.length > 0 ? (
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px" }}>
+                {/* Main Table Fields */}
+                <div>
+                  <div style={{ fontSize: "13px", fontWeight: 600, color: "var(--color-text-secondary)", marginBottom: "12px" }}>
+                    📄 حقول {formData.data_source} ({availableFields.filter((f: any) => !f.table || f.table !== 'registers').length})
+                  </div>
+                  <div style={{ maxHeight: "500px", overflowY: "auto", background: "var(--color-background-secondary)", borderRadius: "8px", padding: "8px" }}>
+                    {availableFields.filter((f: any) => !f.table || f.table !== 'registers').map((field: any) => {
+                      const isSelected = selectedFields.some(f => f.field_name === field.name);
+                      return (
+                        <div
+                          key={field.name}
+                          onClick={() => toggleField(field)}
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: "10px",
+                            padding: "10px",
+                            marginBottom: "6px",
+                            borderRadius: "6px",
+                            background: isSelected ? "var(--color-background-info)" : "var(--color-background-primary)",
+                            border: isSelected ? "1px solid var(--color-border-info)" : "1px solid var(--color-border-tertiary)",
+                            cursor: "pointer",
+                            transition: "all 0.2s",
+                          }}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={isSelected}
+                            onChange={() => {}}
+                            style={{ width: "16px", height: "16px" }}
+                          />
+                          <div style={{ flex: 1 }}>
+                            <div style={{ fontSize: "12px", fontWeight: 600, color: isSelected ? "var(--color-text-info)" : "var(--color-text-primary)" }}>
+                              {field.name}
+                            </div>
+                            <div style={{ fontSize: "10px", color: isSelected ? "var(--color-text-info)" : "var(--color-text-tertiary)" }}>
+                              {field.type} {field.nullable ? "(nullable)" : "(required)"}
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Register Fields */}
+                {formData.selected_registers.length > 0 && (
+                  <div>
+                    <div style={{ fontSize: "13px", fontWeight: 600, color: "var(--color-text-secondary)", marginBottom: "12px" }}>
+                      📒 حقول السجلات ({availableFields.filter((f: any) => f.table === 'registers').length})
+                    </div>
+                    <div style={{ maxHeight: "500px", overflowY: "auto", background: "var(--color-background-secondary)", borderRadius: "8px", padding: "8px" }}>
+                      {availableFields.filter((f: any) => f.table === 'registers').map((field: any) => {
+                        const isSelected = selectedFields.some(f => f.field_name === field.name);
+                        return (
+                          <div
+                            key={`register_${field.name}`}
+                            onClick={() => toggleField(field)}
+                            style={{
+                              display: "flex",
+                              alignItems: "center",
+                              gap: "10px",
+                              padding: "10px",
+                              marginBottom: "6px",
+                              borderRadius: "6px",
+                              background: isSelected ? "var(--color-background-info)" : "var(--color-background-primary)",
+                              border: isSelected ? "1px solid var(--color-border-info)" : "1px solid var(--color-border-tertiary)",
+                              cursor: "pointer",
+                              transition: "all 0.2s",
+                            }}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={isSelected}
+                              onChange={() => {}}
+                              style={{ width: "16px", height: "16px" }}
+                            />
+                            <div style={{ flex: 1 }}>
+                              <div style={{ fontSize: "12px", fontWeight: 600, color: isSelected ? "var(--color-text-info)" : "var(--color-text-primary)" }}>
+                                {field.name}
+                              </div>
+                              <div style={{ fontSize: "10px", color: isSelected ? "var(--color-text-info)" : "var(--color-text-tertiary)" }}>
+                                {field.type} {field.nullable ? "(nullable)" : "(required)"}
+                              </div>
+                              <div style={{ fontSize: "9px", color: "var(--color-text-success)", marginTop: "2px" }}>
+                                📒 من السجل
+                              </div>
+                            </div>
+                          </div>
+                        );
+                    })}
+                    {formData.selected_registers.length === 0 && (
+                      <div style={{ color: "var(--color-text-tertiary)", fontSize: "12px", textAlign: "center", padding: "24px" }}>
+                        اختر سجلًا من تبويب "مصدر البيانات" لإظهار حقول السجلات
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Selected Fields Configuration */}
+                <div>
+                  <div style={{ fontSize: "13px", fontWeight: 600, color: "var(--color-text-secondary)", marginBottom: "12px" }}>
+                    ✅ الحقول المحددة ({selectedFields.length})
+                  </div>
+                  {selectedFields.length === 0 ? (
+                    <div style={{ color: "var(--color-text-tertiary)", fontSize: "13px", textAlign: "center", padding: "48px" }}>
+                      لم يتم اختيار أي حقول بعد
+                    </div>
+                  ) : (
+                    <div style={{ maxHeight: "500px", overflowY: "auto", background: "var(--color-background-secondary)", borderRadius: "8px", padding: "8px" }}>
+                      {selectedFields.map((field, index) => (
+                        <div
+                          key={field.field_name}
+                          style={{
+                            padding: "12px",
+                            marginBottom: "8px",
+                            borderRadius: "6px",
+                            background: "var(--color-background-primary)",
+                            border: "1px solid var(--color-border-tertiary)",
+                          }}
+                        >
+                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" }}>
+                            <div style={{ fontSize: "12px", fontWeight: 600, color: "var(--color-text-primary)" }}>
+                              {field.field_name}
+                            </div>
+                            <button
+                              onClick={() => toggleField(field)}
+                              style={{
+                                background: "none",
+                                border: "none",
+                                cursor: "pointer",
+                                fontSize: "16px",
+                                color: "var(--color-text-danger)",
+                                padding: "4px",
+                              }}
+                            >
+                              ×
+                            </button>
+                          </div>
+
+                          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px" }}>
+                            <div>
+                              <label style={{ fontSize: "10px", color: "var(--color-text-tertiary)", display: "block", marginBottom: "4px" }}>
+                                التسمية (English)
+                              </label>
+                              <input
+                                type="text"
+                                value={field.field_label}
+                                onChange={(e) => updateFieldConfig(field.field_name, { field_label: e.target.value })}
+                                style={{ width: "100%", padding: "6px 8px", fontSize: "11px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "4px", fontFamily: "inherit" }}
+                              />
+                            </div>
+                            <div>
+                              <label style={{ fontSize: "10px", color: "var(--color-text-tertiary)", display: "block", marginBottom: "4px" }}>
+                                التسمية (عربي)
+                              </label>
+                              <input
+                                type="text"
+                                value={field.field_label_ar || field.field_label}
+                                onChange={(e) => updateFieldConfig(field.field_name, { field_label_ar: e.target.value })}
+                                style={{ width: "100%", padding: "6px 8px", fontSize: "11px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "4px", fontFamily: "inherit" }}
+                              />
+                            </div>
+                          </div>
+
+                          <div style={{ display: "flex", gap: "8px", marginTop: "8px", flexWrap: "wrap" }}>
+                            <label style={{ fontSize: "10px", display: "flex", alignItems: "center", gap: "4px", cursor: "pointer" }}>
+                              <input
+                                type="checkbox"
+                                checked={field.is_visible}
+                                onChange={(e) => updateFieldConfig(field.field_name, { is_visible: e.target.checked })}
+                              />
+                              مرئي
+                            </label>
+                            <label style={{ fontSize: "10px", display: "flex", alignItems: "center", gap: "4px", cursor: "pointer" }}>
+                              <input
+                                type="checkbox"
+                                checked={field.is_filterable}
+                                onChange={(e) => updateFieldConfig(field.field_name, { is_filterable: e.target.checked })}
+                              />
+                              قابل للفلترة
+                            </label>
+                            <label style={{ fontSize: "10px", display: "flex", alignItems: "center", gap: "4px", cursor: "pointer" }}>
+                              <input
+                                type="checkbox"
+                                checked={field.is_sortable}
+                                onChange={(e) => updateFieldConfig(field.field_name, { is_sortable: e.target.checked })}
+                              />
+                              قابل للترتيب
+                            </label>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            ) : (
+              <div style={{ color: "var(--color-text-tertiary)", fontSize: "13px", textAlign: "center", padding: "48px" }}>
+                لا توجد حقول متاحة - يرجى اختيار مصدر البيانات أولاً
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Filters Tab */}
+        {activeTab === "filters" && (
+          <div>
+            <h3 style={{ fontSize: "16px", fontWeight: 600, color: "var(--color-text-primary)", marginBottom: "20px" }}>
+              🔍 تكوين الفلاتر
+            </h3>
+
+            <div style={{ marginBottom: "16px" }}>
+              <button
+                onClick={() => addFilter("date_range")}
+                style={{ marginRight: "8px", padding: "6px 12px", fontSize: "12px", background: "var(--color-background-info)", color: "var(--color-text-info)", border: "0.5px solid var(--color-border-info)", borderRadius: "6px", cursor: "pointer", fontFamily: "inherit" }}
+              >
+                + فلتر تاريخ
+              </button>
+              <button
+                onClick={() => addFilter("select")}
+                style={{ marginRight: "8px", padding: "6px 12px", fontSize: "12px", background: "var(--color-background-success)", color: "var(--color-text-success)", border: "0.5px solid var(--color-border-success)", borderRadius: "6px", cursor: "pointer", fontFamily: "inherit" }}
+              >
+                + فلتر قائمة
+              </button>
+              <button
+                onClick={() => addFilter("text")}
+                style={{ marginRight: "8px", padding: "6px 12px", fontSize: "12px", background: "var(--color-background-primary)", color: "var(--color-text-secondary)", border: "0.5px solid var(--color-border-secondary)", borderRadius: "6px", cursor: "pointer", fontFamily: "inherit" }}
+              >
+                + فلتر نصي
+              </button>
+            </div>
+
+            {selectedFilters.length === 0 ? (
+              <div style={{ color: "var(--color-text-tertiary)", fontSize: "13px", textAlign: "center", padding: "48px" }}>
+                لا توجد فلاتر - أضف فلتر جديد
+              </div>
+            ) : (
+              <div style={{ display: "grid", gap: "12px" }}>
+                {selectedFilters.map((filter, index) => (
+                  <div
+                    key={index}
+                    style={{
+                      padding: "16px",
+                      background: "var(--color-background-secondary)",
+                      borderRadius: "8px",
+                      border: "1px solid var(--color-border-tertiary)",
+                    }}
+                  >
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "12px" }}>
+                      <div style={{ fontSize: "13px", fontWeight: 600, color: "var(--color-text-primary)" }}>
+                        {filter.filter_label_ar || filter.filter_label}
+                      </div>
+                      <button
+                        onClick={() => removeFilter(index)}
+                        style={{
+                          background: "none",
+                          border: "none",
+                          cursor: "pointer",
+                          fontSize: "16px",
+                          color: "var(--color-text-danger)",
+                          padding: "4px",
+                        }}
+                      >
+                        🗑️
+                      </button>
+                    </div>
+
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" }}>
+                      <div>
+                        <label style={{ fontSize: "11px", color: "var(--color-text-tertiary)", display: "block", marginBottom: "4px" }}>
+                          الحقل
+                        </label>
+                        <select
+                          value={filter.field_name}
+                          onChange={(e) => updateFilter(index, { field_name: e.target.value })}
+                          style={{ width: "100%", padding: "8px 10px", fontSize: "12px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "6px", fontFamily: "inherit" }}
+                        >
+                          <option value="">-- اختر الحقل --</option>
+                          {selectedFields.map((f) => (
+                            <option key={f.field_name} value={f.field_name}>{f.field_name}</option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <div>
+                        <label style={{ fontSize: "11px", color: "var(--color-text-tertiary)", display: "block", marginBottom: "4px" }}>
+                          نوع الفلتر
+                        </label>
+                        <select
+                          value={filter.filter_type}
+                          onChange={(e) => updateFilter(index, { filter_type: e.target.value })}
+                          style={{ width: "100%", padding: "8px 10px", fontSize: "12px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "6px", fontFamily: "inherit" }}
+                        >
+                          <option value="date_range">Date Range</option>
+                          <option value="select">Select</option>
+                          <option value="multi_select">Multi Select</option>
+                          <option value="text">Text</option>
+                          <option value="number">Number</option>
+                          <option value="boolean">Boolean</option>
+                        </select>
+                      </div>
+                    </div>
+
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px", marginTop: "12px" }}>
+                      <div>
+                        <label style={{ fontSize: "11px", color: "var(--color-text-tertiary)", display: "block", marginBottom: "4px" }}>
+                          التسمية (عربي)
+                        </label>
+                        <input
+                          type="text"
+                          value={filter.filter_label_ar}
+                          onChange={(e) => updateFilter(index, { filter_label_ar: e.target.value })}
+                          style={{ width: "100%", padding: "8px 10px", fontSize: "12px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "6px", fontFamily: "inherit" }}
+                        />
+                      </div>
+
+                      <div>
+                        <label style={{ fontSize: "11px", color: "var(--color-text-tertiary)", display: "block", marginBottom: "4px" }}>
+                          المشغل
+                        </label>
+                        <select
+                          value={filter.operator}
+                          onChange={(e) => updateFilter(index, { operator: e.target.value })}
+                          style={{ width: "100%", padding: "8px 10px", fontSize: "12px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "6px", fontFamily: "inherit" }}
+                        >
+                          <option value="=">= يساوي</option>
+                          <option value="!=">!= لا يساوي</option>
+                          <option value=">">&gt; أكبر من</option>
+                          <option value="<">&lt; أصغر من</option>
+                          <option value=">=">&gt;= أكبر أو يساوي</option>
+                          <option value="<=">&lt;= أصغر أو يساوي</option>
+                          <option value="like">LIKE يحتوي على</option>
+                          <option value="between">BETWEEN بين</option>
+                          <option value="in">IN في قائمة</option>
+                        </select>
+                      </div>
+                    </div>
+
+                    <div style={{ display: "flex", gap: "12px", marginTop: "12px" }}>
+                      <label style={{ fontSize: "11px", display: "flex", alignItems: "center", gap: "6px", cursor: "pointer" }}>
+                        <input
+                          type="checkbox"
+                          checked={filter.is_required}
+                          onChange={(e) => updateFilter(index, { is_required: e.target.checked })}
+                        />
+                        مطلوب
+                      </label>
+                      {filter.filter_type === "select" || filter.filter_type === "multi_select" ? (
+                        <label style={{ fontSize: "11px", display: "flex", alignItems: "center", gap: "6px", cursor: "pointer" }}>
+                          <input
+                            type="checkbox"
+                            checked={filter.is_multiple}
+                            onChange={(e) => updateFilter(index, { is_multiple: e.target.checked })}
+                          />
+                          متعدد القيم
+                        </label>
+                      ) : null}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Aggregations Tab */}
+        {activeTab === "aggregations" && (
+          <div>
+            <h3 style={{ fontSize: "16px", fontWeight: 600, color: "var(--color-text-primary)", marginBottom: "20px" }}>
+              🔢 المقاييس والحسابات
+            </h3>
+
+            {selectedFields.length === 0 ? (
+              <div style={{ color: "var(--color-text-tertiary)", fontSize: "13px", textAlign: "center", padding: "48px" }}>
+                يرجى اختيار الحقول أولاً من تبويب الحقول
+              </div>
+            ) : (
+              <>
+                <div style={{ marginBottom: "16px", padding: "12px", background: "var(--color-background-secondary)", borderRadius: "8px" }}>
+                  <div style={{ fontSize: "12px", fontWeight: 600, color: "var(--color-text-secondary)", marginBottom: "8px" }}>
+                    ➕ إضافة مقياس:
+                  </div>
+                  <div style={{ display: "flex", gap: "8px", flexWrap: "wrap" }}>
+                    {selectedFields.map((field) => (
+                      <div key={field.field_name} style={{ display: "flex", gap: "4px" }}>
+                        <select
+                          onChange={(e) => {
+                            if (e.target.value) {
+                              addAggregation(field.field_name, e.target.value);
+                              e.target.value = "";
+                            }
+                          }}
+                          style={{ padding: "6px 10px", fontSize: "12px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "6px", fontFamily: "inherit" }}
+                        >
+                          <option value="">+ {field.field_name}</option>
+                          <option value="SUM">SUM (المجموع)</option>
+                          <option value="COUNT">COUNT (العدد)</option>
+                          <option value="AVG">AVG (المتوسط)</option>
+                          <option value="MIN">MIN (الأقل)</option>
+                          <option value="MAX">MAX (الأعلى)</option>
+                        </select>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {selectedAggregations.length === 0 ? (
+                  <div style={{ color: "var(--color-text-tertiary)", fontSize: "13px", textAlign: "center", padding: "48px" }}>
+                    لم يتم إضافة أي مقاييس
+                  </div>
+                ) : (
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))", gap: "12px" }}>
+                    {selectedAggregations.map((agg, index) => (
+                      <div
+                        key={index}
+                        style={{
+                          padding: "16px",
+                          background: "var(--color-background-secondary)",
+                          borderRadius: "8px",
+                          border: "1px solid var(--color-border-tertiary)",
+                        }}
+                      >
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "12px" }}>
+                          <div style={{ flex: 1 }}>
+                            <div style={{ fontSize: "13px", fontWeight: 600, color: "var(--color-text-primary)", marginBottom: "4px" }}>
+                              {agg.alias_ar || agg.alias}
+                            </div>
+                            <div style={{ fontSize: "11px", color: "var(--color-text-tertiary)", fontFamily: "var(--font-mono)" }}>
+                              {agg.aggregation_type}({agg.field_name})
+                            </div>
+                          </div>
+                          <button
+                            onClick={() => removeAggregation(index)}
+                            style={{
+                              background: "none",
+                              border: "none",
+                              cursor: "pointer",
+                              fontSize: "16px",
+                              color: "var(--color-text-danger)",
+                              padding: "4px",
+                            }}
+                          >
+                            🗑️
+                          </button>
+                        </div>
+
+                        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "8px" }}>
+                          <div>
+                            <label style={{ fontSize: "10px", color: "var(--color-text-tertiary)", display: "block", marginBottom: "4px" }}>
+                              التسمية (عربي)
+                            </label>
+                            <input
+                              type="text"
+                              value={agg.alias_ar}
+                              onChange={(e) => {
+                                const newAggs = [...selectedAggregations];
+                                newAggs[index].alias_ar = e.target.value;
+                                setSelectedAggregations(newAggs);
+                              }}
+                              style={{ width: "100%", padding: "6px 8px", fontSize: "11px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "4px", fontFamily: "inherit" }}
+                            />
+                          </div>
+
+                          <div>
+                            <label style={{ fontSize: "10px", color: "var(--color-text-tertiary)", display: "block", marginBottom: "4px" }}>
+                              التنسيق
+                            </label>
+                            <select
+                              value={agg.format || "number"}
+                              onChange={(e) => {
+                                const newAggs = [...selectedAggregations];
+                                newAggs[index].format = e.target.value;
+                                setSelectedAggregations(newAggs);
+                              }}
+                              style={{ width: "100%", padding: "6px 8px", fontSize: "11px", border: "0.5px solid var(--color-border-secondary)", borderRadius: "4px", fontFamily: "inherit" }}
+                            >
+                              <option value="number">رقم</option>
+                              <option value="currency">عملة</option>
+                              <option value="percentage">نسبة مئوية</option>
+                            </select>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        )}
+
+        {/* Preview Tab */}
+        {activeTab === "preview" && (
+          <div>
+            <h3 style={{ fontSize: "16px", fontWeight: 600, color: "var(--color-text-primary)", marginBottom: "20px" }}>
+              👁️ معاينة التقرير
+            </h3>
+
+            <div style={{ padding: "20px", background: "var(--color-background-secondary)", borderRadius: "8px", border: "1px solid var(--color-border-tertiary)" }}>
+              {/* Report Header */}
+              <div style={{ marginBottom: "20px", paddingBottom: "16px", borderBottom: "2px solid var(--color-border-info)" }}>
+                <div style={{ fontSize: "18px", fontWeight: 700, color: "var(--color-text-primary)", marginBottom: "4px" }}>
+                  {formData.name_ar || "اسم التقرير (عربي)"}
+                </div>
+                <div style={{ fontSize: "14px", color: "var(--color-text-secondary)" }}>
+                  {formData.name || "Report Name (English)"}
+                </div>
+                {formData.description && (
+                  <div style={{ fontSize: "12px", color: "var(--color-text-tertiary)", marginTop: "8px", lineHeight: 1.6 }}>
+                    {formData.description}
+                  </div>
+                )}
+              </div>
+
+              {/* Report Info */}
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: "16px", marginBottom: "20px" }}>
+                <div style={{ padding: "12px", background: "var(--color-background-primary)", borderRadius: "6px" }}>
+                  <div style={{ fontSize: "11px", color: "var(--color-text-tertiary)", marginBottom: "4px" }}>📊 مصدر البيانات</div>
+                  <div style={{ fontSize: "13px", fontWeight: 600, color: "var(--color-text-primary)" }}>{formData.data_source}</div>
+                  {formData.selected_registers.length > 0 && (
+                    <div style={{ fontSize: "11px", color: "var(--color-text-info)", marginTop: "4px" }}>
+                      + {formData.selected_registers.length} سجل/سجلات
+                    </div>
+                  )}
+                </div>
+
+                <div style={{ padding: "12px", background: "var(--color-background-primary)", borderRadius: "6px" }}>
+                  <div style={{ fontSize: "11px", color: "var(--color-text-tertiary)", marginBottom: "4px" }}>👁️ الرؤية</div>
+                  <div style={{ fontSize: "13px", fontWeight: 600, color: "var(--color-text-primary)" }}>{formData.visibility}</div>
+                </div>
+
+                <div style={{ padding: "12px", background: "var(--color-background-primary)", borderRadius: "6px" }}>
+                  <div style={{ fontSize: "11px", color: "var(--color-text-tertiary)", marginBottom: "4px" }}>📑 الحقول</div>
+                  <div style={{ fontSize: "13px", fontWeight: 600, color: "var(--color-text-primary)" }}>{selectedFields.length} حقل</div>
+                </div>
+
+                <div style={{ padding: "12px", background: "var(--color-background-primary)", borderRadius: "6px" }}>
+                  <div style={{ fontSize: "11px", color: "var(--color-text-tertiary)", marginBottom: "4px" }}>🔢 المقاييس</div>
+                  <div style={{ fontSize: "13px", fontWeight: 600, color: "var(--color-text-primary)" }}>{selectedAggregations.length} مقياس</div>
+                </div>
+
+                <div style={{ padding: "12px", background: "var(--color-background-primary)", borderRadius: "6px" }}>
+                  <div style={{ fontSize: "11px", color: "var(--color-text-tertiary)", marginBottom: "4px" }}>🔍 الفلاتر</div>
+                  <div style={{ fontSize: "13px", fontWeight: 600, color: "var(--color-text-primary)" }}>{selectedFilters.length} فلتر</div>
+                </div>
+
+                <div style={{ padding: "12px", background: "var(--color-background-primary)", borderRadius: "6px" }}>
+                  <div style={{ fontSize: "11px", color: "var(--color-text-tertiary)", marginBottom: "4px" }}>📊 الترتيب</div>
+                  <div style={{ fontSize: "13px", fontWeight: 600, color: "var(--color-text-primary)" }}>
+                    {formData.order_by ? `${formData.order_by} (${formData.order_direction})` : "بدون ترتيب"}
+                  </div>
+                </div>
+              </div>
+
+              {/* Selected Fields Preview */}
+              {selectedFields.length > 0 && (
+                <div style={{ marginBottom: "20px" }}>
+                  <div style={{ fontSize: "13px", fontWeight: 600, color: "var(--color-text-secondary)", marginBottom: "8px" }}>
+                    📑 الحقول المحددة:
+                  </div>
+                  <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
+                    {selectedFields.map((field) => (
+                      <span
+                        key={field.field_name}
+                        style={{
+                          padding: "4px 10px",
+                          background: "var(--color-background-info)",
+                          color: "var(--color-text-info)",
+                          borderRadius: "4px",
+                          fontSize: "11px",
+                          fontWeight: 500,
+                        }}
+                      >
+                        {field.field_label_ar || field.field_label || field.field_name}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Aggregations Preview */}
+              {selectedAggregations.length > 0 && (
+                <div style={{ marginBottom: "20px" }}>
+                  <div style={{ fontSize: "13px", fontWeight: 600, color: "var(--color-text-secondary)", marginBottom: "8px" }}>
+                    🔢 المقاييس:
+                  </div>
+                  <div style={{ display: "flex", gap: "6px", flexWrap: "wrap" }}>
+                    {selectedAggregations.map((agg, index) => (
+                      <span
+                        key={index}
+                        style={{
+                          padding: "4px 10px",
+                          background: "var(--color-background-success)",
+                          color: "var(--color-text-success)",
+                          borderRadius: "4px",
+                          fontSize: "11px",
+                          fontWeight: 500,
+                        }}
+                      >
+                        {agg.alias_ar || agg.alias}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Filters Preview */}
+              {selectedFilters.length > 0 && (
+                <div style={{ marginBottom: "20px" }}>
+                  <div style={{ fontSize: "13px", fontWeight: 600, color: "var(--color-text-secondary)", marginBottom: "8px" }}>
+                    🔍 الفلاتر:
+                  </div>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(250px, 1fr))", gap: "8px" }}>
+                    {selectedFilters.map((filter, index) => (
+                      <div
+                        key={index}
+                        style={{
+                          padding: "8px",
+                          background: "var(--color-background-primary)",
+                          borderRadius: "4px",
+                          fontSize: "11px",
+                        }}
+                      >
+                        <div style={{ fontWeight: 600, color: "var(--color-text-primary)", marginBottom: "4px" }}>
+                          {filter.filter_label_ar || filter.filter_label}
+                        </div>
+                        <div style={{ fontSize: "10px", color: "var(--color-text-tertiary)" }}>
+                          {filter.field_name} {filter.operator}
+                        </div>
+                        {filter.is_required && (
+                          <div style={{ fontSize: "9px", color: "var(--color-text-danger)", marginTop: "4px" }}>
+                            ⚠️ مطلوب
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Empty State */}
+              {selectedFields.length === 0 && selectedAggregations.length === 0 && selectedFilters.length === 0 && (
+                <div style={{ textAlign: "center", padding: "48px", color: "var(--color-text-tertiary)" }}>
+                  <div style={{ fontSize: "48px", marginBottom: "16px" }}>📄</div>
+                  <div style={{ fontSize: "14px", fontWeight: 500 }}>التقرير فارغ</div>
+                  <div style={{ fontSize: "12px", marginTop: "8px" }}>ابدأ بإضافة الحقول والمقاييس</div>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Bottom Action Bar */}
+      <div style={{ 
+        display: "flex", 
+        justifyContent: "space-between", 
+        alignItems: "center", 
+        marginTop: "24px",
+        padding: "16px 24px",
+        background: "var(--color-background-primary)",
+        border: "0.5px solid var(--color-border-tertiary)",
+        borderRadius: "var(--border-radius-lg)",
+      }}>
+        <div style={{ display: "flex", gap: "8px" }}>
+          <button
+            onClick={() => setActiveTab(prev => {
+              const tabs = ["basic", "source", "fields", "filters", "aggregations", "preview"];
+              const idx = tabs.indexOf(prev);
+              return tabs[Math.max(0, idx - 1)] as any;
+            })}
+            disabled={activeTab === "basic"}
+            style={{
+              padding: "10px 20px",
+              fontSize: "13px",
+              fontWeight: 500,
+              background: activeTab === "basic" ? "var(--color-background-secondary)" : "var(--color-background-primary)",
+              color: activeTab === "basic" ? "var(--color-text-tertiary)" : "var(--color-text-secondary)",
+              border: "0.5px solid var(--color-border-secondary)",
+              borderRadius: "6px",
+              cursor: activeTab === "basic" ? "not-allowed" : "pointer",
+              fontFamily: "inherit",
+              opacity: activeTab === "basic" ? 0.5 : 1,
+            }}
+          >
+            ← السابق
+          </button>
+          <button
+            onClick={() => setActiveTab(prev => {
+              const tabs = ["basic", "source", "fields", "filters", "aggregations", "preview"];
+              const idx = tabs.indexOf(prev);
+              return tabs[Math.min(tabs.length - 1, idx + 1)] as any;
+            })}
+            disabled={activeTab === "preview"}
+            style={{
+              padding: "10px 20px",
+              fontSize: "13px",
+              fontWeight: 500,
+              background: activeTab === "preview" ? "var(--color-background-secondary)" : "var(--color-background-info)",
+              color: activeTab === "preview" ? "var(--color-text-tertiary)" : "var(--color-text-info)",
+              border: "0.5px solid var(--color-border-info)",
+              borderRadius: "6px",
+              cursor: activeTab === "preview" ? "not-allowed" : "pointer",
+              fontFamily: "inherit",
+              opacity: activeTab === "preview" ? 0.5 : 1,
+            }}
+          >
+            التالي →
+          </button>
+        </div>
+
+        <button
+          onClick={handleSubmit}
+          disabled={createReport.isPending}
+          style={{
+            padding: "10px 32px",
+            fontSize: "14px",
+            fontWeight: 600,
+            background: createReport.isPending ? "var(--color-background-secondary)" : "var(--color-background-success)",
+            color: createReport.isPending ? "var(--color-text-tertiary)" : "var(--color-text-success)",
+            border: "0.5px solid var(--color-border-success)",
+            borderRadius: "6px",
+            cursor: createReport.isPending ? "not-allowed" : "pointer",
+            fontFamily: "inherit",
+            opacity: createReport.isPending ? 0.5 : 1,
+          }}
+        >
+          {createReport.isPending ? "⏳ جاري الحفظ..." : "💾 حفظ التقرير"}
+        </button>
+      </div>
+    </div>
+  );
+}

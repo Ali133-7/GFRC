@@ -90,7 +90,19 @@ Route::prefix('v1')->middleware('throttle:api')->group(function () {
         Route::get('receipts/{id}/qr', [ReceiptController::class, 'qr']);
         Route::get('receipts/{id}/revisions', [ReceiptController::class, 'revisions']);
 
-        // Dynamic Report Engine Routes (must come BEFORE legacy routes)
+        // Legacy Report Routes (MUST come BEFORE apiResource)
+        Route::get('reports/daily', [\App\Http\Controllers\Api\V1\ReportController::class, 'daily']);
+        Route::get('reports/monthly', [\App\Http\Controllers\Api\V1\ReportController::class, 'monthly']);
+        Route::get('reports/user-activity', [\App\Http\Controllers\Api\V1\ReportController::class, 'userActivity']);
+        Route::get('reports/register-summary', [\App\Http\Controllers\Api\V1\ReportController::class, 'registerSummary']);
+        Route::post('reports/custom', [\App\Http\Controllers\Api\V1\ReportController::class, 'custom']);
+        Route::get('reports/export-csv', [\App\Http\Controllers\Api\V1\ReportController::class, 'exportCsv']);
+        
+        // Dynamic Report Engine Routes
+        Route::get('reports/business-registers', [\App\Http\Controllers\Api\V1\ReportController::class, 'businessRegisters']);
+        Route::post('reports/business-fields', [\App\Http\Controllers\Api\V1\ReportController::class, 'businessFields']);
+        Route::post('reports/business-relationships', [\App\Http\Controllers\Api\V1\ReportController::class, 'businessRelationships']);
+        Route::post('reports/business-preview', [\App\Http\Controllers\Api\V1\ReportController::class, 'businessPreview']);
         Route::apiResource('reports', \App\Http\Controllers\Api\V1\ReportController::class);
         Route::post('reports/{id}/execute', [\App\Http\Controllers\Api\V1\ReportController::class, 'execute']);
         Route::get('reports/{id}/chart/{chartId}', [\App\Http\Controllers\Api\V1\ReportController::class, 'chart']);
@@ -101,13 +113,17 @@ Route::prefix('v1')->middleware('throttle:api')->group(function () {
         Route::get('reports/fields/available', [\App\Http\Controllers\Api\V1\ReportController::class, 'availableFields']);
         Route::get('reports/download/{filename}', [\App\Http\Controllers\Api\V1\ReportController::class, 'download'])->where('filename', '.*');
         
-        // Legacy Report Routes (for backward compatibility - will be removed)
-        Route::get('reports/daily', [\App\Http\Controllers\Api\V1\ReportController::class, 'daily']);
-        Route::get('reports/monthly', [\App\Http\Controllers\Api\V1\ReportController::class, 'monthly']);
-        Route::get('reports/user-activity', [\App\Http\Controllers\Api\V1\ReportController::class, 'userActivity']);
-        Route::get('reports/register-summary', [\App\Http\Controllers\Api\V1\ReportController::class, 'registerSummary']);
-        Route::post('reports/custom', [\App\Http\Controllers\Api\V1\ReportController::class, 'custom']);
-        Route::get('reports/export-csv', [\App\Http\Controllers\Api\V1\ReportController::class, 'exportCsv']);
+        // Enterprise Report Designer Routes
+        Route::get('reports/{id}/design', [\App\Http\Controllers\Api\V1\ReportController::class, 'loadDesign']);
+        Route::post('reports/{id}/design', [\App\Http\Controllers\Api\V1\ReportController::class, 'saveDesign']);
+        Route::post('reports/{id}/preview', [\App\Http\Controllers\Api\V1\ReportController::class, 'execute']);
+        Route::get('reports/templates', [\App\Http\Controllers\Api\V1\ReportController::class, 'getTemplates']);
+        Route::post('reports/{id}/apply-template/{templateId}', [\App\Http\Controllers\Api\V1\ReportController::class, 'clone']);
+        Route::get('reports/{id}/history', [\App\Http\Controllers\Api\V1\ReportController::class, 'getVersionHistory']);
+        Route::post('reports/{id}/restore/{versionId}', [\App\Http\Controllers\Api\V1\ReportController::class, 'restoreVersion']);
+        Route::post('reports/{id}/schedule', [\App\Http\Controllers\Api\V1\ReportController::class, 'update']);
+        Route::post('reports/validate-formula', [\App\Http\Controllers\Api\V1\ReportController::class, 'validateFormula']);
+        Route::post('reports/test-filter', [\App\Http\Controllers\Api\V1\ReportController::class, 'testFilter']);
 
         Route::get('settings', [SettingController::class, 'index']);
         Route::get('settings/public', [SettingController::class, 'publicSettings']);
