@@ -80,11 +80,12 @@ export function RegisterTree({
   onRecordUsage,
   onDropField,
 }: RegisterTreeProps) {
+  const registerList = Array.isArray(registers) ? registers : [];
   const favoriteSet = new Set(favoriteIds);
 
   return (
     <div className="register-tree" role="tree">
-      {(registers ?? []).map((register) => {
+      {registerList.map((register) => {
         const isSelected = selectedRegisterIds.includes(register.id);
         const isExpanded = expandedRegisterIds.has(register.id);
         const fields = fieldsByRegister.get(register.id) ?? [];

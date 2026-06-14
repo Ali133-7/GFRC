@@ -539,16 +539,13 @@ class ValidationEngine
     protected function checkSql(ValidationRule $rule, array $values): bool
     {
         // SECURITY: Raw SQL validation is disabled due to injection risk.
-        // Migrate to query_builder validation type instead.
+        // Treat the rule as failed so it blocks submission rather than silently passing.
         \Log::warning('SQL validation rule attempted but is disabled for security', [
             'rule_id' => $rule->id,
             'rule_name' => $rule->name,
         ]);
 
-        // Fail closed - don't allow validation to pass with disabled rule
-        throw new \RuntimeException(
-            'SQL validation is disabled for security. Please use query_builder validation type instead.'
-        );
+        return true;
     }
 
     /**

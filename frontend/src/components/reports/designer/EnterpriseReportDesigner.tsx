@@ -49,10 +49,14 @@ export function EnterpriseReportDesigner({ reportId, onSave }: EnterpriseReportD
   const [showSaveLoad, setShowSaveLoad] = useState(false);
   const [activeDragField, setActiveDragField] = useState<ReportField | null>(null);
 
-  const { data: registers = [] } = useBusinessRegisters();
+  const { data: registersData } = useBusinessRegisters();
   const { data: fieldsData } = useBusinessFields(selectedRegisterIds);
-  const businessFields = fieldsData ?? EMPTY_ARRAY;
-  const { data: analyzedRelationships = [] } = useRegisterRelationships(selectedRegisterIds);
+  const registers = Array.isArray(registersData) ? registersData : EMPTY_ARRAY;
+  const businessFields = Array.isArray(fieldsData) ? fieldsData : EMPTY_ARRAY;
+  const { data: analyzedRelationshipsData } = useRegisterRelationships(selectedRegisterIds);
+  const analyzedRelationships = Array.isArray(analyzedRelationshipsData)
+    ? analyzedRelationshipsData
+    : EMPTY_ARRAY;
   const previewMutation = useBusinessPreview();
   const mutateAsyncRef = React.useRef(previewMutation.mutateAsync);
   mutateAsyncRef.current = previewMutation.mutateAsync;

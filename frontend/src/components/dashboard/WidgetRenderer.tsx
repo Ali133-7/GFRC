@@ -1,13 +1,46 @@
-import React from 'react';
-import { KPICardWidget } from './widgets/KPICardWidget';
-import { ChartWidget, PieChartWidget, RevenueChartWidget, FeeBreakdownWidget, WorkflowStatusWidget, TaskListWidget, AuditLogWidget, SystemHealthWidget } from './widgets/ChartFinancialWidgets';
-import { TableWidget, ListWidget } from './widgets/TableListWidgets';
-import { NotesWidget, ShortcutsWidget, QuickActionsWidget, AnnouncementsWidget } from './widgets/UtilityWidgets';
-import { CalendarWidget, ClockWidget, ImageWidget, VideoWidget, PdfViewerWidget, WebsiteEmbedWidget } from './widgets/MediaWidgets';
-import { StatCardWidget, GaugeWidget } from './widgets/StatCardWidget';
 import type { DashboardWidget } from '@/types/dashboard';
 
-interface WidgetRendererProps {
+import { KPICardWidget } from './widgets/KPICardWidget';
+import { ChartWidget } from './widgets/ChartWidget';
+import {
+  PieChartWidget,
+  RevenueChartWidget,
+  FeeBreakdownWidget,
+  WorkflowStatusWidget,
+  TaskListWidget,
+  AuditLogWidget,
+  SystemHealthWidget,
+} from './widgets/ChartFinancialWidgets';
+import { TableWidget, ListWidget, NotesWidget, ShortcutsWidget } from './widgets/TableListWidgets';
+import {
+  ClockWidget,
+  CalendarWidget,
+  ImageWidget,
+  VideoWidget,
+  PdfViewerWidget,
+  WebsiteEmbedWidget,
+} from './widgets/MediaWidgets';
+import { QuickActionsWidget, AnnouncementsWidget } from './widgets/UtilityWidgets';
+
+import StatCardWidget from './widgets/StatCardWidget';
+import ChartBarWidget from './widgets/ChartBarWidget';
+import ChartLineWidget from './widgets/ChartLineWidget';
+import ChartPieWidget from './widgets/ChartPieWidget';
+import NewTableWidget from './widgets/TableWidget';
+import NewClockWidget from './widgets/ClockWidget';
+import WeatherWidget from './widgets/WeatherWidget';
+import YoutubeAudioWidget from './widgets/YoutubeAudioWidget';
+import ProgressWidget from './widgets/ProgressWidget';
+import GaugeWidget from './widgets/GaugeWidget';
+import TextBlockWidget from './widgets/TextBlockWidget';
+import IframeWidget from './widgets/IframeWidget';
+import type { DashboardWidgetItem, WidgetType } from './types';
+
+/* ------------------------------------------------------------------ */
+/*  Legacy WidgetRenderer (used by DashboardView / index.ts)          */
+/* ------------------------------------------------------------------ */
+
+interface LegacyWidgetRendererProps {
   widget: DashboardWidget;
   data?: any;
   isLoading?: boolean;
@@ -17,152 +50,110 @@ interface WidgetRendererProps {
   canEdit?: boolean;
 }
 
-/**
- * Enterprise Widget Renderer
- * Renders any widget type from the widget marketplace
- */
 export function WidgetRenderer({
   widget,
   data,
-  isLoading = false,
+  isLoading,
   onRefresh,
   onEdit,
   onRemove,
-  canEdit = false,
-}: WidgetRendererProps) {
-  const widgetProps = {
+  canEdit,
+}: LegacyWidgetRendererProps) {
+  const common = {
     widget,
     data,
     isLoading,
     onRefresh,
-    canEdit,
     onEdit,
     onRemove,
+    canEdit,
   };
 
-  // KPI & Statistic Widgets
-  if (widget.widget_type === 'kpi_card') {
-    return <KPICardWidget {...widgetProps} />;
-  }
-  
-  if (widget.widget_type === 'stat_card') {
-    return <StatCardWidget {...widgetProps} />;
-  }
-  
-  if (widget.widget_type === 'gauge') {
-    return <GaugeWidget {...widgetProps} />;
-  }
-
-  // Financial Widgets
-  if (widget.widget_type === 'revenue_chart') {
-    return <RevenueChartWidget {...widgetProps} />;
-  }
-  
-  if (widget.widget_type === 'fee_breakdown') {
-    return <FeeBreakdownWidget {...widgetProps} />;
-  }
-
-  // Workflow Widgets
-  if (widget.widget_type === 'workflow_status') {
-    return <WorkflowStatusWidget {...widgetProps} />;
-  }
-  
-  if (widget.widget_type === 'task_list') {
-    return <TaskListWidget {...widgetProps} />;
-  }
-
-  // Audit Widgets
-  if (widget.widget_type === 'audit_log') {
-    return <AuditLogWidget {...widgetProps} />;
-  }
-
-  // Monitoring Widgets
-  if (widget.widget_type === 'system_health') {
-    return <SystemHealthWidget {...widgetProps} />;
-  }
-
-  // Media Widgets
-  if (widget.widget_type === 'image') {
-    return <ImageWidget {...widgetProps} />;
-  }
-  
-  if (widget.widget_type === 'video') {
-    return <VideoWidget {...widgetProps} />;
-  }
-  
-  if (widget.widget_type === 'pdf_viewer') {
-    return <PdfViewerWidget {...widgetProps} />;
-  }
-  
-  if (widget.widget_type === 'website_embed') {
-    return <WebsiteEmbedWidget {...widgetProps} />;
-  }
-
-  // Utility Widgets
-  if (widget.widget_type === 'clock_digital') {
-    return <ClockWidget {...widgetProps} />;
-  }
-  
-  if (widget.widget_type === 'calendar') {
-    return <CalendarWidget {...widgetProps} />;
-  }
-  
-  if (widget.widget_type === 'notes') {
-    return <NotesWidget {...widgetProps} />;
-  }
-  
-  if (widget.widget_type === 'shortcuts') {
-    return <ShortcutsWidget {...widgetProps} />;
-  }
-  
-  if (widget.widget_type === 'quick_actions') {
-    return <QuickActionsWidget {...widgetProps} />;
-  }
-  
-  if (widget.widget_type === 'announcements') {
-    return <AnnouncementsWidget {...widgetProps} />;
-  }
-
-  // Data Widgets
-  if (widget.widget_type === 'table') {
-    return <TableWidget {...widgetProps} />;
-  }
-  
-  if (widget.widget_type === 'list') {
-    return <ListWidget {...widgetProps} />;
-  }
-
-  // Chart Widgets
-  if (widget.widget_type === 'chart') {
-    return <ChartWidget {...widgetProps} />;
-  }
-  
-  if (widget.widget_type === 'pie_chart') {
-    return <PieChartWidget {...widgetProps} />;
-  }
-
-  // Fallback for unknown widget types
-  return (
-    <div className="p-4 text-center text-gray-500 bg-gray-50 rounded-lg">
-      <div className="text-4xl mb-2">🔧</div>
-      <div className="font-medium">Widget type "{widget.widget_type}" not implemented yet</div>
-      <div className="text-sm mt-2">This widget type is in development</div>
-      {canEdit && (
-        <div className="mt-4 flex justify-center gap-2">
-          <button
-            onClick={onEdit}
-            className="px-3 py-1 text-sm bg-blue-600 text-white rounded hover:bg-blue-700"
-          >
-            Configure
-          </button>
-          <button
-            onClick={onRemove}
-            className="px-3 py-1 text-sm bg-red-600 text-white rounded hover:bg-red-700"
-          >
-            Remove
-          </button>
+  switch (widget.widget_type) {
+    case 'kpi_card':
+    case 'stat_card':
+      return <KPICardWidget {...common} />;
+    case 'chart':
+      return <ChartWidget {...common} />;
+    case 'pie_chart':
+      return <PieChartWidget {...common} />;
+    case 'revenue_chart':
+      return <RevenueChartWidget {...common} />;
+    case 'fee_breakdown':
+      return <FeeBreakdownWidget {...common} />;
+    case 'workflow_status':
+      return <WorkflowStatusWidget {...common} />;
+    case 'task_list':
+      return <TaskListWidget {...common} />;
+    case 'audit_log':
+      return <AuditLogWidget {...common} />;
+    case 'system_health':
+      return <SystemHealthWidget {...common} />;
+    case 'table':
+      return <TableWidget {...common} />;
+    case 'list':
+      return <ListWidget {...common} />;
+    case 'notes':
+      return <NotesWidget {...common} />;
+    case 'shortcuts':
+      return <ShortcutsWidget {...common} />;
+    case 'quick_actions':
+      return <QuickActionsWidget {...common} />;
+    case 'announcements':
+      return <AnnouncementsWidget {...common} />;
+    case 'clock_digital':
+      return <ClockWidget {...common} />;
+    case 'calendar':
+      return <CalendarWidget {...common} />;
+    case 'image':
+      return <ImageWidget {...common} />;
+    case 'video':
+      return <VideoWidget {...common} />;
+    case 'pdf_viewer':
+      return <PdfViewerWidget {...common} />;
+    case 'website_embed':
+      return <WebsiteEmbedWidget {...common} />;
+    default:
+      return (
+        <div className="relative p-4 bg-white rounded-lg border border-gray-200">
+          <div className="text-sm font-medium text-gray-700 mb-2">{widget.name_ar}</div>
+          <div className="text-xs text-gray-400">نوع الودجت غير مدعوم: {widget.widget_type}</div>
         </div>
-      )}
-    </div>
-  );
+      );
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/*  New WidgetRenderer (used by DashboardGrid)                        */
+/* ------------------------------------------------------------------ */
+
+interface NewWidgetRendererProps {
+  widget: DashboardWidgetItem;
+}
+
+const NEW_RENDERERS: Record<WidgetType, React.FC<{ widget: DashboardWidgetItem }>> = {
+  stat_card: StatCardWidget,
+  chart_bar: ChartBarWidget,
+  chart_line: ChartLineWidget,
+  chart_pie: ChartPieWidget,
+  table: NewTableWidget,
+  clock: NewClockWidget,
+  weather: WeatherWidget,
+  youtube_audio: YoutubeAudioWidget,
+  progress: ProgressWidget,
+  gauge: GaugeWidget,
+  text_block: TextBlockWidget,
+  iframe: IframeWidget,
+};
+
+export default function NewWidgetRenderer({ widget }: NewWidgetRendererProps) {
+  const Renderer = NEW_RENDERERS[widget.widget_type];
+  if (!Renderer) {
+    return (
+      <div className="flex h-full w-full items-center justify-center text-sm text-gray-500">
+        نوع الودجت غير مدعوم
+      </div>
+    );
+  }
+  return <Renderer widget={widget} />;
 }

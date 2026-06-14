@@ -17,7 +17,7 @@ class ValidationRule extends Model
     protected $fillable = [
         'workflow_version_id', 'name', 'description', 'validation_type', 'category',
         'target_register_id', 'trigger_field_id', 'trigger_conditions', 'target_fields', 'query_conditions',
-        'sql_query', 'sql_condition', 'route_config', 'lookup_config', 'field_effects',
+        'sql_query', 'sql_condition', 'route_config', 'lookup_config', 'field_effects', 'expectation',
         'response_type', 'error_message_ar', 'error_message_en',
         'confirm_message_ar', 'confirm_message_en',
         'sort_order', 'is_active', 'realtime_enabled',

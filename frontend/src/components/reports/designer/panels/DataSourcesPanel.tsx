@@ -10,6 +10,8 @@ import {
 import type { ReportField } from "@/types/report";
 import "./BusinessFieldBrowser.css";
 
+const EMPTY_ARRAY: never[] = [];
+
 interface DataSourcesPanelProps {
   selectedRegisterIds: string[];
   onSelectedRegistersChange: React.Dispatch<React.SetStateAction<string[]>>;
@@ -21,8 +23,10 @@ export function DataSourcesPanel({
   onSelectedRegistersChange,
   onDropField,
 }: DataSourcesPanelProps) {
-  const { data: registers = [], isLoading: isLoadingRegisters } = useBusinessRegisters();
-  const { data: fields = [], isLoading: isLoadingFields } = useBusinessFields(selectedRegisterIds);
+  const { data: registersData, isLoading: isLoadingRegisters } = useBusinessRegisters();
+  const { data: fieldsData, isLoading: isLoadingFields } = useBusinessFields(selectedRegisterIds);
+  const registers = Array.isArray(registersData) ? registersData : EMPTY_ARRAY;
+  const fields = Array.isArray(fieldsData) ? fieldsData : EMPTY_ARRAY;
   const [favoriteIds, setFavoriteIds] = useState<string[]>(() => getFavoriteFieldIds());
   const [recentIds, setRecentIds] = useState<string[]>(() => getRecentFieldIds());
 

@@ -88,11 +88,11 @@ class WorkflowExecutionController extends ApiController
         $execution = WorkflowExecution::with('version.steps', 'version.fields.registerField')
             ->findOrFail($id);
 
-        $this->authorize('update', $execution);
-
         if (!$execution->isInProgress() && !$execution->isPaused()) {
             return $this->error('هذا التنفيذ ليس نشطاً', 422);
         }
+
+        $this->authorize('update', $execution);
 
         $data = $request->validate([
             'step_index' => 'required|integer|min:0',
@@ -192,12 +192,12 @@ class WorkflowExecutionController extends ApiController
     {
         return DB::transaction(function () use ($request, $id) {
             $execution = WorkflowExecution::lockForUpdate()->findOrFail($id);
-            
-            $this->authorize('complete', $execution);
 
             if (!$execution->isInProgress()) {
                 return $this->error('هذا التنفيذ ليس نشطاً', 422);
             }
+
+            $this->authorize('complete', $execution);
 
             $data = $request->validate([
                 'notes' => 'nullable|string',
@@ -216,12 +216,12 @@ class WorkflowExecutionController extends ApiController
     {
         return DB::transaction(function () use ($request, $id) {
             $execution = WorkflowExecution::lockForUpdate()->findOrFail($id);
-            
-            $this->authorize('cancel', $execution);
 
             if (!$execution->isInProgress()) {
                 return $this->error('هذا التنفيذ ليس نشطاً', 422);
             }
+
+            $this->authorize('cancel', $execution);
 
             $data = $request->validate([
                 'reason' => 'required|string',

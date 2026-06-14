@@ -2,6 +2,8 @@ import React, { useState, useEffect, useCallback } from "react";
 import { useRegisterRelationships } from "@/hooks/useBusinessReportData";
 import type { BusinessRegister, RegisterRelationship } from "@/types/report";
 
+const EMPTY_ARRAY: never[] = [];
+
 interface DataModelDesignerProps {
   registers: BusinessRegister[];
   selectedRegisterIds: string[];
@@ -15,25 +17,30 @@ export function DataModelDesigner({
   relationships,
   onRelationshipsChange,
 }: DataModelDesignerProps) {
-  const { data: analyzedRelationships = [], isLoading } = useRegisterRelationships(selectedRegisterIds);
-  const [localJoins, setLocalJoins] = useState<RegisterRelationship[]>(relationships);
+  const registerList = Array.isArray(registers) ? registers : EMPTY_ARRAY;
+  const relationshipList = Array.isArray(relationships) ? relationships : EMPTY_ARRAY;
+  const { data: analyzedRelationshipsData, isLoading } = useRegisterRelationships(selectedRegisterIds);
+  const analyzedRelationships = Array.isArray(analyzedRelationshipsData)
+    ? analyzedRelationshipsData
+    : EMPTY_ARRAY;
+  const [localJoins, setLocalJoins] = useState<RegisterRelationship[]>(relationshipList);
 
   useEffect(() => {
     if (analyzedRelationships.length > 0) {
       // Merge auto-detected relationships with existing ones, preferring existing overrides
-      const existingIds = new Set(relationships.map((r) => r.id));
-      const merged = [
-        ...relationships,
-        ...analyzedRelationships.filter((r) => !existingIds.has(r.id)),
-      ];
+      const existingIds = new Set(relationshipList.map((r) => r.id));
+      const newItems = analyzedRelationships.filter((r) => !existingIds.has(r.id));
+      if (newItems.length === 0) return;
+
+      const merged = [...relationshipList, ...newItems];
       setLocalJoins(merged);
       onRelationshipsChange(merged);
     }
-  }, [analyzedRelationships]);
+  }, [analyzedRelationships, onRelationshipsChange, relationshipList]);
 
   useEffect(() => {
-    setLocalJoins(relationships);
-  }, [relationships]);
+    setLocalJoins(relationshipList);
+  }, [relationshipList]);
 
   const handleRemoveJoin = useCallback(
     (id: string) => {
@@ -44,7 +51,7 @@ export function DataModelDesigner({
     [localJoins, onRelationshipsChange]
   );
 
-  const selectedRegisters = registers.filter((r) => selectedRegisterIds.includes(r.id));
+  const selectedRegisters = registerList.filter((r) => selectedRegisterIds.includes(r.id));
 
   return (
     <div style={{ padding: "20px", height: "100%", overflow: "auto" }}>

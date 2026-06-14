@@ -27,6 +27,14 @@ use Illuminate\Support\Facades\Log;
 class EnterpriseRuleEngine
 {
     /**
+     * Default calculation context used when none is provided.
+     */
+    protected function getContext(): CalculationContext
+    {
+        return CalculationContext::default();
+    }
+
+    /**
      * Execute all rules for a given workflow version.
      * Handles BOTH enterprise rules (validation_rules with rule_config)
      * AND workflow rules (workflow_rules: simple + case_based).

@@ -2,6 +2,8 @@ import React, { useMemo, useState, useCallback } from "react";
 import type { BusinessRegister, BusinessField, ReportField } from "@/types/report";
 import { RegisterTree } from "./RegisterTree";
 
+const EMPTY_ARRAY: never[] = [];
+
 export type FieldBrowserTab = "all" | "favorites" | "recent" | "selected";
 
 interface BusinessFieldBrowserProps {
@@ -58,10 +60,12 @@ export function BusinessFieldBrowser({
   onRecordUsage,
   onDropField,
 }: BusinessFieldBrowserProps) {
+  const registerList = Array.isArray(registers) ? registers : EMPTY_ARRAY;
+  const fieldList = Array.isArray(fields) ? fields : EMPTY_ARRAY;
   const [search, setSearch] = useState("");
   const [activeTab, setActiveTab] = useState<FieldBrowserTab>("all");
   const [expandedRegisters, setExpandedRegisters] = useState<Set<string>>(
-    () => new Set((registers ?? []).map((r) => r.id))
+    () => new Set(registerList.map((r) => r.id))
   );
 
   const toggleRegister = useCallback((id: string) => {
@@ -75,16 +79,16 @@ export function BusinessFieldBrowser({
 
   const filteredFields = useMemo(() => {
     const term = search.trim().toLowerCase();
-    let base = fields;
+    let base = fieldList;
 
     if (activeTab === "favorites") {
-      base = fields.filter((f) => favoriteIds.includes(f.id));
+      base = fieldList.filter((f) => favoriteIds.includes(f.id));
     } else if (activeTab === "recent") {
       const recentSet = new Set(recentIds);
-      base = fields.filter((f) => recentSet.has(f.id));
+      base = fieldList.filter((f) => recentSet.has(f.id));
     } else if (activeTab === "selected") {
       const selectedSet = new Set(selectedRegisterIds);
-      base = fields.filter((f) => selectedSet.has(f.register_id));
+      base = fieldList.filter((f) => selectedSet.has(f.register_id));
     }
 
     if (!term) return base;
@@ -95,7 +99,7 @@ export function BusinessFieldBrowser({
         f.name.toLowerCase().includes(term) ||
         (f.register_name?.toLowerCase().includes(term) ?? false)
     );
-  }, [fields, search, activeTab, favoriteIds, recentIds, selectedRegisterIds]);
+  }, [fieldList, search, activeTab, favoriteIds, recentIds, selectedRegisterIds]);
 
   const fieldsByRegister = useMemo(() => {
     const map = new Map<string, BusinessField[]>();
@@ -108,9 +112,9 @@ export function BusinessFieldBrowser({
   }, [filteredFields]);
 
   const categories = useMemo(() => {
-    const set = new Set(fields.map((f) => f.category || "general"));
+    const set = new Set(fieldList.map((f) => f.category || "general"));
     return Array.from(set).sort();
-  }, [fields]);
+  }, [fieldList]);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden" }}>
@@ -205,7 +209,7 @@ export function BusinessFieldBrowser({
           >
             جاري تحميل السجلات والحقول...
           </div>
-        ) : (registers ?? []).length === 0 ? (
+        ) : registerList.length === 0 ? (
           <div
             style={{
               padding: "20px",
@@ -218,7 +222,7 @@ export function BusinessFieldBrowser({
           </div>
         ) : (
           <RegisterTree
-            registers={registers}
+            registers={registerList}
             fieldsByRegister={fieldsByRegister}
             selectedRegisterIds={selectedRegisterIds}
             favoriteIds={favoriteIds}

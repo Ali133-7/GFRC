@@ -40,6 +40,23 @@ export interface ReportPreviewData {
   aggregations: Record<string, any>;
 }
 
+function normalizeArrayResponse<T>(...candidates: unknown[]): T[] {
+  for (const candidate of candidates) {
+    if (Array.isArray(candidate)) {
+      return candidate as T[];
+    }
+
+    if (candidate && typeof candidate === "object") {
+      const nestedData = (candidate as { data?: unknown }).data;
+      if (Array.isArray(nestedData)) {
+        return nestedData as T[];
+      }
+    }
+  }
+
+  return [];
+}
+
 export class ReportDesignerAPI {
   /**
    * Load report design from backend
@@ -89,7 +106,12 @@ export class ReportDesignerAPI {
     const response = await client.get("/reports/business-registers", {
       params: { include_inactive: includeInactive },
     });
-    return response.data?.data?.registers ?? response.data?.data ?? response.data;
+    return normalizeArrayResponse<BusinessRegister>(
+      response.data?.data?.registers,
+      response.data?.registers,
+      response.data?.data,
+      response.data
+    );
   }
 
   /**
@@ -99,7 +121,12 @@ export class ReportDesignerAPI {
     const response = await client.post("/reports/business-fields", {
       register_ids: registerIds,
     });
-    return response.data?.data?.fields ?? response.data?.data ?? response.data;
+    return normalizeArrayResponse<BusinessField>(
+      response.data?.data?.fields,
+      response.data?.fields,
+      response.data?.data,
+      response.data
+    );
   }
 
   /**
@@ -109,7 +136,12 @@ export class ReportDesignerAPI {
     const response = await client.post("/reports/business-relationships", {
       register_ids: registerIds,
     });
-    return response.data?.data?.relationships ?? response.data?.data ?? response.data;
+    return normalizeArrayResponse<RegisterRelationship>(
+      response.data?.data?.relationships,
+      response.data?.relationships,
+      response.data?.data,
+      response.data
+    );
   }
 
   /**

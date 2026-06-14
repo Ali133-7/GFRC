@@ -10,7 +10,7 @@ export function DataPreviewPanel({ data, total, onDataChange }: DataPreviewPanel
   const [page, setPage] = useState(1);
   const perPage = 10;
 
-  const displayData = data.length > 0 ? data : [];
+  const displayData = Array.isArray(data) && data.length > 0 ? data : [];
   const columns = useMemo(() => {
     if (displayData.length === 0) return [];
     return Object.keys(displayData[0]);

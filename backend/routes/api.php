@@ -4,6 +4,7 @@ use App\Http\Controllers\Api\V1\AuditLogController;
 use App\Http\Controllers\Api\V1\AuthController;
 use App\Http\Controllers\Api\V1\BackupController;
 use App\Http\Controllers\Api\V1\DashboardController;
+use App\Http\Controllers\Api\V1\DashboardWidgetController;
 use App\Http\Controllers\Api\V1\ElementController;
 use App\Http\Controllers\Api\V1\FeeVersionController;
 use App\Http\Controllers\Api\V1\HealthController;
@@ -297,6 +298,16 @@ Route::prefix('v1')->middleware('throttle:api')->group(function () {
         Route::put('widgets/{id}', [WidgetController::class, 'update']);
         Route::put('dashboards/{id}/widgets/positions', [WidgetController::class, 'updatePositions']);
         Route::delete('widgets/{id}', [WidgetController::class, 'destroy']);
+
+        // Customizable Dashboard Widget System
+        Route::prefix('dashboard')->group(function () {
+            Route::get('/layout', [DashboardWidgetController::class, 'getLayout']);
+            Route::post('/layout', [DashboardWidgetController::class, 'saveLayout']);
+            Route::post('/widgets/data', [DashboardWidgetController::class, 'getWidgetData']);
+            Route::get('/widgets/{widgetId}/data', [DashboardWidgetController::class, 'getWidgetData']);
+            Route::get('/registers', [DashboardWidgetController::class, 'getAvailableRegisters']);
+            Route::get('/registers/{registerId}/fields', [DashboardWidgetController::class, 'getRegisterFields']);
+        });
     });
 
     Route::get('health', [HealthController::class, 'index']);
